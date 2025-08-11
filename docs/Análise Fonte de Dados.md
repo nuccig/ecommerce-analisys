@@ -37,7 +37,7 @@ Fornecedor (1) ←→ (N) Produto
 
 Esta seção detalha os endpoints disponíveis na API de e-commerce, fornecendo uma visão abrangente das funcionalidades oferecidas e dos formatos de dados utilizados.
 
-A documentação dos endpoints é essencial para o planejamento da ingestão de dados, pois permite identificar as fontes de informação disponíveis, compreender a estrutura dos dados retornados e definir as estratégias de coleta que serão implementadas nos DAGs do Airflow. 
+A documentação dos endpoints é essencial para o planejamento da ingestão de dados, pois permite identificar as fontes de informação disponíveis, compreender a estrutura dos dados retornados e definir as estratégias de coleta que serão implementadas nos DAGs do Airflow.
 
 Cada endpoint representa uma fonte de dados específica que alimentará as diferentes camadas do data warehouse.
 
