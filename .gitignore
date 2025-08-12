@@ -1,3 +1,15 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+plan.out
+
+# uv
+.uv/
+uv.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
