@@ -76,15 +76,3 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
-
-#######################
-# Subnet pública do Redshift
-#######################
-resource "aws_redshift_subnet_group" "main" {
-  name       = "${var.project_name}-subnet-group"
-  subnet_ids = aws_subnet.public[*].id
-
-  tags = {
-    Name = "${var.project_name}-subnet-group"
-  }
-}

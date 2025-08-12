@@ -1,10 +1,10 @@
-data "aws_ami" "amazon_linux" {
+data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["amazon"]
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
 
   filter {
@@ -18,14 +18,46 @@ data "aws_key_pair" "airflow_key" {
 }
 
 locals {
-  user_data_base64 = templatefile("${path.module}/user-data.sh", {
-    project_name = var.project_name
-  })
+  user_data_base64 = base64encode(<<-EOF
+    #!/bin/bash
+
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+    echo "Iniciando setup do Docker e Airflow..."
+
+    apt-get update -y
+    apt-get install -y docker.io git curl
+    systemctl start docker
+    systemctl enable docker
+    usermod -a -G docker ubuntu
+
+    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+
+    mkdir -p /opt/ecommerce-airflow
+    cd /opt/ecommerce-airflow
+    mkdir -p dags logs plugins config
+    chown -R 50000:0 logs
+    chmod -R 777 logs
+
+    curl -LfO 'https://airflow.apache.org/docs/apache-airflow/3.0.4/docker-compose.yaml'
+
+    cat > .env << 'ENVEOF'
+      AIRFLOW_UID=50000
+      AIRFLOW__CORE__LOAD_EXAMPLES=false
+    ENVEOF
+
+    docker-compose up airflow-init
+    docker-compose up -d
+
+    EOF
+  )
 }
+
 
 # EC2 Instance para Airflow
 resource "aws_instance" "airflow" {
-  ami                    = data.aws_ami.amazon_linux.id
+  ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.ec2_instance_type
   key_name               = data.aws_key_pair.airflow_key.key_name
   subnet_id              = aws_subnet.public[0].id

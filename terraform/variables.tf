@@ -4,27 +4,10 @@ variable "project_name" {
   default     = "ecommerce-analysis"
 }
 
-variable "database_name" {
-  description = "Name of the Redshift database"
-  type        = string
-  default     = "ecommerce_dw"
-}
-
-variable "master_username" {
-  description = "Master username for Redshift cluster"
-  type        = string
-  default     = "admin"
-}
-
-variable "master_password" {
-  description = "Master password for Redshift cluster"
-  type        = string
-}
-
 variable "ec2_instance_type" {
   description = "EC2 instance type for Airflow"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.large"
 }
 
 variable "ec2_ssh_key_name" {
