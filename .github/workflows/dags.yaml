@@ -25,16 +25,16 @@ jobs:
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ec2-key.pem
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2-key.pem
           chmod 600 ~/.ssh/ec2-key.pem
       
       - name: Copy DAGs to EC2
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem -r airflow/dags/ ubuntu@${{ vars.EC2_HOST }}:/opt/airflow/dags/
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem -r airflow/dags/ ubuntu@${{ secrets.EC2_HOST }}:/opt/airflow/dags/
       
       - name: Restart Airflow services
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ vars.EC2_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
             sudo systemctl restart airflow-webserver
             sudo systemctl restart airflow-scheduler
           EOF
