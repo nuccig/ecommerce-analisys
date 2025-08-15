@@ -30,7 +30,8 @@ jobs:
       
       - name: Copy DAGs to EC2
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem -r airflow/dags/ ubuntu@${{ secrets.EC2_HOST }}:/opt/ecommerce-airflow/dags/
+          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem" \
+            airflow/dags/ ubuntu@${{ secrets.EC2_HOST }}:/opt/ecommerce-airflow/dags/
       
       - name: Restart Airflow services
         run: |
