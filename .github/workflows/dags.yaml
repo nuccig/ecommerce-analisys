@@ -35,6 +35,6 @@ jobs:
       - name: Restart Airflow services
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
-            sudo systemctl restart airflow-webserver
-            sudo systemctl restart airflow-scheduler
+            cd /opt/ecommerce-airflow
+            sudo docker-compose restart airflow-webserver airflow-scheduler
           EOF
