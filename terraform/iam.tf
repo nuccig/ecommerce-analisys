@@ -37,12 +37,8 @@ resource "aws_iam_role_policy" "airflow_ec2_s3_policy" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.bronze-bucket.arn,
-          "${aws_s3_bucket.bronze-bucket.arn}/*",
-          aws_s3_bucket.silver-bucket.arn,
-          "${aws_s3_bucket.silver-bucket.arn}/*",
-          aws_s3_bucket.gold-bucket.arn,
-          "${aws_s3_bucket.gold-bucket.arn}/*"
+          aws_s3_bucket.ecommerce.arn,
+          "${aws_s3_bucket.ecommerce.arn}/*"
         ]
       }
     ]
