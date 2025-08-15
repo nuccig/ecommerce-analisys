@@ -1,7 +1,7 @@
 # Security Group para EC2 Airflow
 resource "aws_security_group" "airflow_ec2_sg" {
   name_prefix = "${var.project_name}-airflow-ec2-sg"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = data.aws_vpc.main.id
 
   # SSH access
   ingress {
