@@ -1,0 +1,40 @@
+name: DAGs Workflow
+
+on:
+  push:
+    branches:
+      - main
+      - feat/**
+    paths:
+      - "dags/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "dags/**"
+  workflow_dispatch:
+
+jobs:
+  dags:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+    
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ec2-key.pem
+          chmod 600 ~/.ssh/ec2-key.pem
+      
+      - name: Copy DAGs to EC2
+        run: |
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem -r dags/ ubuntu@${{ vars.EC2_HOST }}:/opt/airflow/dags/
+      
+      - name: Restart Airflow services
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ vars.EC2_HOST }} << 'EOF'
+            sudo systemctl restart airflow-webserver
+            sudo systemctl restart airflow-scheduler
+          EOF
