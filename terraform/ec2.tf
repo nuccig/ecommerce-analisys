@@ -60,7 +60,7 @@ resource "aws_instance" "airflow" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.ec2_instance_type
   key_name               = data.aws_key_pair.airflow_key.key_name
-  subnet_id              = aws_subnet.public[0].id
+  subnet_id              = data.aws_subnets.public.ids[0]
   vpc_security_group_ids = [aws_security_group.airflow_ec2_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.airflow_ec2_profile.name
 

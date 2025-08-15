@@ -10,7 +10,7 @@ data "aws_vpc" "main" {
 # IGW 
 #######################
 data "aws_internet_gateway" "main" {
-  id = "igw-0940564e697829b5b"
+  internet_gateway_id = "igw-0940564e697829b5b"
 }
 
 #######################
