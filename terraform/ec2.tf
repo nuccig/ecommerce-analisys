@@ -34,19 +34,18 @@ locals {
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
 
-    mkdir -p /opt/ecommerce-airflow
-    cd /opt/ecommerce-airflow
+    mkdir -p /opt/airflow
+    cd /opt/airflow
     mkdir -p dags logs plugins config
     chown -R 50000:0 logs
     chmod -R 777 logs
 
     curl -LfO 'https://airflow.apache.org/docs/apache-airflow/3.0.4/docker-compose.yaml'
 
-    cat > .env << 'ENVEOF'
-      AIRFLOW_UID=50000
-      AIRFLOW__CORE__LOAD_EXAMPLES=false
-    ENVEOF
+    docker-compose run airflow-cli airflow config list
 
+    sudo sed -i 's/load_examples = True/load_examples = False/' /opt/airflow/config/airflow.cfg
+    
     docker-compose up airflow-init
     docker-compose up -d
 
@@ -67,6 +66,8 @@ resource "aws_instance" "airflow" {
   associate_public_ip_address = true
 
   user_data = local.user_data_base64
+
+  user_data_replace_on_change = true
 
   root_block_device {
     volume_type = "gp3"
