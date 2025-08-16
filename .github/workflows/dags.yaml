@@ -34,15 +34,15 @@ jobs:
             airflow/dags/ ubuntu@${{ secrets.EC2_HOST }}:/tmp/dags-temp/
           
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
-            sudo rm -rf /opt/ecommerce-airflow/dags/*
-            sudo cp -r /tmp/dags-temp/* /opt/ecommerce-airflow/dags/
-            sudo chown -R 50000:0 /opt/ecommerce-airflow/dags/
+            sudo rm -rf /opt/airflow/dags/*
+            sudo cp -r /tmp/dags-temp/* /opt/airflow/dags/
+            sudo chown -R 50000:0 /opt/airflow/dags/
             rm -rf /tmp/dags-temp
           EOF
       
       - name: Restart Airflow services
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/ec2-key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
-            cd /opt/ecommerce-airflow
-            sudo docker-compose restart airflow-scheduler airflow-dag-processor
+            cd /opt/airflow
+            sudo docker-compose restart airflow-scheduler airflow-dag-processor airflow-apiserver
           EOF

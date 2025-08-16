@@ -452,5 +452,4 @@ extract_task = PythonOperator(
     dag=dag,
 )
 
-
 extract_task
