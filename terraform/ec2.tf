@@ -39,6 +39,9 @@ locals {
     mkdir -p dags logs plugins config
     chown -R 50000:0 logs
     chmod -R 777 logs
+    chmod -R 777 config
+    chmod -R 777 plugins
+    chmod -R 777 dags
 
     curl -LfO 'https://airflow.apache.org/docs/apache-airflow/3.0.4/docker-compose.yaml'
 
