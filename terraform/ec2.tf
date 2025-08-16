@@ -44,8 +44,14 @@ locals {
 
     docker-compose run airflow-cli airflow config list
 
-    sudo sed -i 's/load_examples = True/load_examples = False/' /opt/airflow/config/airflow.cfg
+    sudo sed -i 's/load_examples = True/load_examples = False/' /config/airflow.cfg
     
+    cat > .env << 'ENVEOF'
+      AIRFLOW_UID=50000
+      AIRFLOW__CORE__LOAD_EXAMPLES=false
+    ENVEOF
+
+
     docker-compose up airflow-init
     docker-compose up -d
 
