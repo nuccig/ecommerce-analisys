@@ -30,6 +30,7 @@ locals {
     systemctl start docker
     systemctl enable docker
     usermod -a -G docker ubuntu
+    newgrp docker
 
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
@@ -37,26 +38,72 @@ locals {
     mkdir -p /opt/airflow
     cd /opt/airflow
     mkdir -p dags logs plugins config
-    chown -R 50000:0 logs
+
+    # Configurar permissões corretas
+    chown -R 50000:0 /opt/airflow
+    chmod -R 755 /opt/airflow
     chmod -R 777 logs
-    chmod -R 777 config
-    chmod -R 777 plugins
-    chmod -R 777 dags
 
     curl -LfO 'https://airflow.apache.org/docs/apache-airflow/3.0.4/docker-compose.yaml'
 
-    docker-compose run airflow-cli airflow config list
+    cat > requirements.txt << 'REQEOF'
+      pandas==2.0.3
+      sqlalchemy==2.0.20
+      pymysql==1.1.0
+      boto3==1.28.57
+      pyarrow==13.0.0
+    REQEOF
 
-    sudo sed -i 's/load_examples = True/load_examples = False/' config/airflow.cfg
-    
     cat > .env << 'ENVEOF'
       AIRFLOW_UID=50000
-      AIRFLOW__CORE__LOAD_EXAMPLES=false
+      AIRFLOW_GID=0
+
+      AIRFLOW__CORE__LOAD_EXAMPLES=False
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      AIRFLOW__CORE__PARALLELISM=4
+      AIRFLOW__CORE__DAG_CONCURRENCY=2
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
+
+      AIRFLOW__LOGGING__REMOTE_LOGGING=False
+      AIRFLOW__LOGGING__LOGGING_LEVEL=INFO
+
+      AIRFLOW__WEBSERVER__BASE_URL=http://localhost:8080
+      AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
+      AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=60
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=30
+      AIRFLOW__SCHEDULER__PARSING_PROCESSES=2
+
+      _AIRFLOW_WWW_USER_USERNAME=airflow
+      _AIRFLOW_WWW_USER_PASSWORD=airflow
+
+      _PIP_ADDITIONAL_REQUIREMENTS=pandas==2.0.3 sqlalchemy==2.0.20 pymysql==1.1.0 boto3==1.28.57 pyarrow==13.0.0
     ENVEOF
 
+    echo "Inicializando Airflow..."
 
     docker-compose up airflow-init
-    docker-compose up -d
+
+    sleep 15
+
+    docker-compose up -d --remove-orphans
+
+    sleep 300
+
+    echo "Status dos containers:"
+    docker-compose ps
+
+    echo "Instalando dependências Python..."
+    docker-compose exec -T airflow-scheduler pip install pandas sqlalchemy pymysql boto3 pyarrow || true
+    docker-compose exec -T airflow-webserver pip install pandas sqlalchemy pymysql boto3 pyarrow || true
+
+    docker-compose restart airflow-scheduler
+
+    echo "Setup concluído em $(date)"
+    echo "Usuário: airflow / Senha: airflow"
 
     EOF
   )
@@ -75,8 +122,6 @@ resource "aws_instance" "airflow" {
   associate_public_ip_address = true
 
   user_data = local.user_data_base64
-
-  user_data_replace_on_change = true
 
   root_block_device {
     volume_type = "gp3"
