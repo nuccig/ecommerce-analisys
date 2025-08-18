@@ -18,6 +18,9 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
 
     steps:
       - name: Checkout code
@@ -60,3 +63,15 @@ jobs:
         working-directory: terraform
         env:
           TF_VAR_master_password: ${{ secrets.TF_VAR_MASTER_PASSWORD }}
+
+      - name: Get Terraform outputs
+        id: terraform-outputs
+        run: |
+          echo "airflow_dns=$(terraform output -raw airflow_dns)" >> $GITHUB_OUTPUT
+        working-directory: terraform
+
+      - name: Update GitHub secrets with Terraform outputs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh secret set EC2_HOST --body "${{ steps.terraform-outputs.outputs.airflow_dns }}"

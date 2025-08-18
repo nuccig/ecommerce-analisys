@@ -47,40 +47,41 @@ locals {
     curl -LfO 'https://airflow.apache.org/docs/apache-airflow/3.0.4/docker-compose.yaml'
 
     cat > requirements.txt << 'REQEOF'
-      pandas==2.0.3
-      sqlalchemy==2.0.20
-      pymysql==1.1.0
-      boto3==1.28.57
-      pyarrow==13.0.0
+boto3>=1.40.11
+pandas>=2.3.1
+pyarrow>=21.0.0
+pymysql>=1.1.1
+requests>=2.32.4
+sqlalchemy>=1.4.54
     REQEOF
 
     cat > .env << 'ENVEOF'
-      AIRFLOW_UID=50000
-      AIRFLOW_GID=0
+AIRFLOW_UID=50000
+AIRFLOW_GID=0
 
-      AIRFLOW__CORE__LOAD_EXAMPLES=False
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
-      AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      AIRFLOW__CORE__PARALLELISM=4
-      AIRFLOW__CORE__DAG_CONCURRENCY=2
-      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+AIRFLOW__CORE__EXECUTOR=LocalExecutor
+AIRFLOW__CORE__PARALLELISM=4
+AIRFLOW__CORE__DAG_CONCURRENCY=2
+AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=1
 
-      AIRFLOW__LOGGING__REMOTE_LOGGING=False
-      AIRFLOW__LOGGING__LOGGING_LEVEL=INFO
+AIRFLOW__LOGGING__REMOTE_LOGGING=False
+AIRFLOW__LOGGING__LOGGING_LEVEL=INFO
 
-      AIRFLOW__WEBSERVER__BASE_URL=http://localhost:8080
-      AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
-      AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
-      AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+AIRFLOW__WEBSERVER__BASE_URL=http://localhost:8080
+AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
+AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
+AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
 
-      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=60
-      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=30
-      AIRFLOW__SCHEDULER__PARSING_PROCESSES=2
+AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=60
+AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=30
+AIRFLOW__SCHEDULER__PARSING_PROCESSES=2
 
-      _AIRFLOW_WWW_USER_USERNAME=airflow
-      _AIRFLOW_WWW_USER_PASSWORD=airflow
+_AIRFLOW_WWW_USER_USERNAME=airflow
+_AIRFLOW_WWW_USER_PASSWORD=airflow
 
-      _PIP_ADDITIONAL_REQUIREMENTS=pandas==2.0.3 sqlalchemy==2.0.20 pymysql==1.1.0 boto3==1.28.57 pyarrow==13.0.0
+_PIP_ADDITIONAL_REQUIREMENTS=boto3>=1.40.11 pandas>=2.3.1 pyarrow>=21.0.0 pymysql>=1.1.1 requests>=2.32.4 sqlalchemy>=1.4.54
     ENVEOF
 
     echo "Inicializando Airflow..."
@@ -96,14 +97,7 @@ locals {
     echo "Status dos containers:"
     docker-compose ps
 
-    echo "Instalando dependências Python..."
-    docker-compose exec -T airflow-scheduler pip install pandas sqlalchemy pymysql boto3 pyarrow || true
-    docker-compose exec -T airflow-webserver pip install pandas sqlalchemy pymysql boto3 pyarrow || true
-
-    docker-compose restart airflow-scheduler
-
     echo "Setup concluído em $(date)"
-    echo "Usuário: airflow / Senha: airflow"
 
     EOF
   )
