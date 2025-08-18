@@ -1,0 +1,77 @@
+name: Terraform Workflow
+
+on:
+  push:
+    branches:
+      - main
+      - feat/**
+    paths:
+      - "terraform/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+  workflow_dispatch:
+
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.12.0
+    
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+    
+      - name: Adding credentials to run
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/minha-keypair-ec2.pub
+          chmod 644 ~/.ssh/minha-keypair-ec2.pub
+            
+      - name: Initialize Terraform
+        run: terraform init
+        working-directory: terraform
+
+      - name: Validate Terraform configuration
+        run: terraform validate
+        working-directory: terraform
+
+      - name: Plan Terraform changes
+        run: terraform plan
+        working-directory: terraform
+        env:
+          TF_VAR_master_password: ${{ secrets.TF_VAR_MASTER_PASSWORD }}
+
+      - name: Apply Terraform changes
+        run: terraform apply -auto-approve
+        working-directory: terraform
+        env:
+          TF_VAR_master_password: ${{ secrets.TF_VAR_MASTER_PASSWORD }}
+
+      - name: Get Terraform outputs
+        id: terraform-outputs
+        run: |
+          echo "airflow_dns=$(terraform output -raw airflow_dns)" >> $GITHUB_OUTPUT
+        working-directory: terraform
+
+      - name: Update GitHub secrets with Terraform outputs
+        env:
+          GH_TOKEN: ${{ secrets.PAT_GH }}
+        run: |
+          gh secret set EC2_HOST --body "${{ steps.terraform-outputs.outputs.airflow_dns }}"
