@@ -1,5 +1,6 @@
 import json
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -12,13 +13,14 @@ from sqlalchemy import create_engine
 
 from airflow import DAG
 
+warnings.filterwarnings('ignore')
 
 @dataclass
 class TableConfig:
     """Configuração de uma tabela"""
 
     table: str
-    date_column: str
+    date_column: str | None
     incremental: bool
 
 
@@ -128,12 +130,7 @@ class DatabaseExtractor:
     def engine(self):
         """Lazy loading da engine"""
         if self._engine is None:
-            self._engine = create_engine(
-                self.connection_string,
-                pool_pre_ping=True,
-                pool_recycle=3600,
-                echo=False,
-            )
+            self._engine = create_engine(self.connection_string)
             logging.info(f"Engine criada: {type(self._engine).__name__}")
         return self._engine
 
@@ -153,7 +150,8 @@ class DatabaseExtractor:
 
         logging.info(f"{table_config.table} - {extract_date_str}: Executando query")
 
-        df = pd.read_sql(query, self.engine)
+        with self.engine.connect() as conn:
+            df = pd.read_sql(sql=query, con=conn.connection)
 
         if not df.empty:
             df["_extraction_date"] = extract_date_str
@@ -258,7 +256,7 @@ class EcommerceDataExtractor:
         self.table_configs = {
             "vendas": TableConfig("vendas", "data_venda", True),
             "produtos": TableConfig("produtos", "criado_em", True),
-            "itens_venda": TableConfig("itens_venda", "criado_em", True),
+            "itens_venda": TableConfig("itens_venda", None, False),
             "clientes": TableConfig("clientes", "criado_em", True),
             "categorias": TableConfig("categorias", "criado_em", True),
             "fornecedores": TableConfig("fornecedores", "criado_em", True),
@@ -387,6 +385,170 @@ class EcommerceDataExtractor:
         finally:
             self.db_extractor.dispose()
 
+    def full_extract(self, execution_datetime: datetime) -> Dict:
+        """
+        Executa uma carga completa inicial de todas as tabelas,
+        reutilizando a infraestrutura existente
+        """
+        logging.info("Iniciando carga completa inicial de dados do e-commerce")
+
+        extraction_summary = {}
+        total_extracted_records = 0
+
+        try:
+            for table_name, table_config in self.table_configs.items():
+                logging.info(f"Processando carga completa da tabela: {table_name}")
+
+                if table_config.date_column:
+                    dates_to_extract = self._get_all_dates_in_table(table_config)
+                    if not dates_to_extract:
+                        logging.info(
+                            f"{table_name}: Nenhuma data encontrada, extraindo como snapshot"
+                        )
+                        dates_to_extract = [execution_datetime.date()]
+                else:
+                    dates_to_extract = [execution_datetime.date()]
+
+                table_records = 0
+                processed_dates = []
+
+                for extract_date in dates_to_extract:
+
+                    temp_config = TableConfig(
+                        table=table_config.table,
+                        date_column=(
+                            table_config.date_column
+                            if table_config.date_column
+                            else None
+                        ),
+                        incremental=bool(table_config.date_column),
+                    )
+
+                    result = self.extract_single_table_date(
+                        table_name, temp_config, extract_date
+                    )
+
+                    if result.status == "success":
+                        table_records += result.records
+                        processed_dates.append(result.extract_date)
+                    elif result.status in ["empty", "no_data"]:
+                        processed_dates.append(result.extract_date)
+
+                extraction_summary[table_name] = {
+                    "records": table_records,
+                    "status": "success" if table_records > 0 else "no_data",
+                    "dates_processed": processed_dates,
+                    "total_partitions": len(dates_to_extract),
+                    "extraction_type": "full_load_partitioned",
+                    "format": "parquet",
+                }
+
+                total_extracted_records += table_records
+                logging.info(
+                    f"{table_name}: {table_records} registros totais em {len(processed_dates)} partições"
+                )
+
+            report = self._generate_full_load_report(
+                execution_datetime, extraction_summary, total_extracted_records
+            )
+
+            report_key = f"bronze/_reports/full_load_report_{execution_datetime.strftime('%Y-%m-%d_%H-%M-%S')}.json"
+            self.s3_manager.upload_json(report, report_key)
+
+            logging.info(f"Relatório de carga completa salvo: {report_key}")
+            logging.info(
+                f"Carga completa finalizada: {total_extracted_records} registros totais extraídos"
+            )
+
+            return report
+
+        finally:
+            self.db_extractor.dispose()
+
+    def _get_all_dates_in_table(self, table_config: TableConfig) -> List[date]:
+        """
+        Busca todas as datas únicas presentes na tabela para carga completa
+        """
+        try:
+            query = f"""
+            SELECT DISTINCT DATE({table_config.date_column}) as date_value
+            FROM {table_config.table}
+            WHERE {table_config.date_column} IS NOT NULL
+            ORDER BY date_value
+            """
+
+            logging.info(f"{table_config.table}: Buscando todas as datas disponíveis")
+
+            with self.db_extractor.engine.connect() as conn:
+                df = pd.read_sql(sql=query, con=conn.connection)
+
+            if df.empty:
+                logging.warning(
+                    f"{table_config.table}: Nenhuma data encontrada na coluna {table_config.date_column}"
+                )
+                return []
+
+            dates = [
+                pd.to_datetime(row["date_value"]).date() for _, row in df.iterrows()
+            ]
+
+            logging.info(
+                f"{table_config.table}: {len(dates)} datas únicas encontradas para carga completa"
+            )
+            return dates
+
+        except Exception as e:
+            logging.error(f"{table_config.table}: Erro ao buscar datas - {str(e)}")
+            return []
+
+    def _generate_full_load_report(
+        self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
+    ) -> Dict:
+        """
+        Gera relatório específico para carga completa,
+        """
+
+        base_report = self._generate_report(
+            execution_datetime, extraction_summary, total_records
+        )
+
+        successful_tables = [
+            t for t in extraction_summary.values() if t["status"] == "success"
+        ]
+        total_partitions = sum(
+            t.get("total_partitions", 1) for t in extraction_summary.values()
+        )
+
+        base_report.update(
+            {
+                "dag_id": "ecommerce_mysql_to_s3_bronze_full_load",
+                "extraction_type": "full_load_partitioned",
+                "total_partitions": total_partitions,
+                "summary_stats": {
+                    "largest_table_records": (
+                        max(successful_tables, key=lambda x: x["records"])["records"]
+                        if successful_tables
+                        else 0
+                    ),
+                    "total_partitions_created": total_partitions,
+                    "avg_records_per_partition": (
+                        round(total_records / total_partitions, 2)
+                        if total_partitions > 0
+                        else 0
+                    ),
+                    "tables_with_multiple_partitions": len(
+                        [
+                            t
+                            for t in successful_tables
+                            if t.get("total_partitions", 1) > 1
+                        ]
+                    ),
+                },
+            }
+        )
+
+        return base_report
+
     def _generate_report(
         self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
     ) -> Dict:
@@ -427,6 +589,18 @@ def extract_mysql_to_s3(**context):
     return extractor.run_extraction(context["execution_date"])
 
 
+def full_extract_mysql_to_s3(**context):
+    """Wrapper para carga completa inicial no PythonOperator"""
+    extractor = EcommerceDataExtractor(
+        mysql_connection=MYSQL_CONNECTION,
+        s3_bucket=S3_BUCKET,
+        aws_region=AWS_REGION,
+        max_backfill_days=MAX_BACKFILL_DAYS,
+    )
+
+    return extractor.full_extract(context["execution_date"])
+
+
 default_args = {
     "owner": "data-team",
     "depends_on_past": False,
@@ -446,12 +620,26 @@ dag = DAG(
     tags=["bronze", "ecommerce", "mysql"],
 )
 
+# DAG para carga completa inicial (execução manual)
+dag_full_load = DAG(
+    "ecommerce_mysql_to_s3_bronze_full_load",
+    default_args=default_args,
+    description="Carga Completa Inicial E-commerce MySQL para S3 Bronze",
+    schedule=None,  # Apenas execução manual
+    catchup=False,
+    tags=["bronze", "ecommerce", "mysql", "full-load", "initial"],
+)
+
 extract_task = PythonOperator(
     task_id="extract_mysql_to_s3_bronze",
     python_callable=extract_mysql_to_s3,
     dag=dag,
 )
 
-extract_task
+full_extract_task = PythonOperator(
+    task_id="full_extract_mysql_to_s3_bronze",
+    python_callable=full_extract_mysql_to_s3,
+    dag=dag_full_load,
+)
 
 #
