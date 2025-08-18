@@ -72,6 +72,6 @@ jobs:
 
       - name: Update GitHub secrets with Terraform outputs
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_GH }}
+          GH_TOKEN: ${{ secrets.PAT_GH }}
         run: |
           gh secret set EC2_HOST --body "${{ steps.terraform-outputs.outputs.airflow_dns }}"
