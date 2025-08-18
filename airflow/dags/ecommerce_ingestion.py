@@ -13,7 +13,8 @@ from sqlalchemy import create_engine
 
 from airflow import DAG
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
+
 
 @dataclass
 class TableConfig:
@@ -641,5 +642,3 @@ full_extract_task = PythonOperator(
     python_callable=full_extract_mysql_to_s3,
     dag=dag_full_load,
 )
-
-#
