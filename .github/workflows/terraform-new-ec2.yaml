@@ -1,4 +1,4 @@
-name: Terraform Workflow
+name: Terraform Apply && Update DAGs
 
 on:
   push:
@@ -53,13 +53,13 @@ jobs:
         working-directory: terraform
 
       - name: Plan Terraform changes
-        run: terraform plan
+        run: terraform plan --target=aws_instance.airflow
         working-directory: terraform
         env:
           TF_VAR_master_password: ${{ secrets.TF_VAR_MASTER_PASSWORD }}
 
       - name: Apply Terraform changes
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve --target=aws_instance.airflow
         working-directory: terraform
         env:
           TF_VAR_master_password: ${{ secrets.TF_VAR_MASTER_PASSWORD }}
