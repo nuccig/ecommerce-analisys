@@ -34,7 +34,6 @@ resource "aws_glue_catalog_database" "ecommerce_gold" {
   }
 }
 
-# Glue Crawler - Bronze Layer
 resource "aws_glue_crawler" "ecommerce_bronze_crawler" {
   database_name = aws_glue_catalog_database.ecommerce_bronze.name
   name          = "${var.project_name}-bronze-crawler"
@@ -60,7 +59,8 @@ resource "aws_glue_crawler" "ecommerce_bronze_crawler" {
       }
     }
     Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
+      TableGroupingPolicy     = "CombineCompatibleSchemas"
+      TableLevelConfiguration = 3
     }
   })
 
@@ -102,7 +102,8 @@ resource "aws_glue_crawler" "ecommerce_silver_crawler" {
       }
     }
     Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
+      TableGroupingPolicy     = "CombineCompatibleSchemas"
+      TableLevelConfiguration = 3
     }
   })
 
@@ -118,7 +119,6 @@ resource "aws_glue_crawler" "ecommerce_silver_crawler" {
   }
 }
 
-# Glue Crawler - Gold Layer
 resource "aws_glue_crawler" "ecommerce_gold_crawler" {
   database_name = aws_glue_catalog_database.ecommerce_gold.name
   name          = "${var.project_name}-gold-crawler"
@@ -145,7 +145,8 @@ resource "aws_glue_crawler" "ecommerce_gold_crawler" {
       }
     }
     Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
+      TableGroupingPolicy     = "CombineCompatibleSchemas"
+      TableLevelConfiguration = 3
     }
   })
 
