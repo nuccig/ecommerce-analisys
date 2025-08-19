@@ -1,28 +1,51 @@
-# Glue Database
-resource "aws_glue_catalog_database" "ecommerce_database" {
-  name = "${var.project_name}-database"
+resource "aws_glue_catalog_database" "ecommerce_bronze" {
+  name = "${var.project_name}-bronze"
 
-  description = "Database para análise de dados de ecommerce"
+  description = "Bronze layer - Dados brutos do ecommerce"
 
   tags = {
-    Name        = "${var.project_name}-database"
+    Name        = "${var.project_name}-bronze"
     Environment = "production"
     Layer       = "bronze"
   }
 }
 
-# Glue Crawler para dados de ecommerce
-resource "aws_glue_crawler" "ecommerce_crawler" {
-  database_name = aws_glue_catalog_database.ecommerce_database.name
-  name          = "${var.project_name}-crawler"
+resource "aws_glue_catalog_database" "ecommerce_silver" {
+  name = "${var.project_name}-silver"
+
+  description = "Silver layer - Dados limpos e padronizados do ecommerce"
+
+  tags = {
+    Name        = "${var.project_name}-silver"
+    Environment = "production"
+    Layer       = "silver"
+  }
+}
+
+resource "aws_glue_catalog_database" "ecommerce_gold" {
+  name = "${var.project_name}-gold"
+
+  description = "Gold layer - Dados agregados e prontos para BI do ecommerce"
+
+  tags = {
+    Name        = "${var.project_name}-gold"
+    Environment = "production"
+    Layer       = "gold"
+  }
+}
+
+# Glue Crawler - Bronze Layer
+resource "aws_glue_crawler" "ecommerce_bronze_crawler" {
+  database_name = aws_glue_catalog_database.ecommerce_bronze.name
+  name          = "${var.project_name}-bronze-crawler"
   role          = aws_iam_role.glue_crawler_role.arn
 
   s3_target {
-    path = "s3://${aws_s3_bucket.ecommerce.bucket}/"
+    path = "s3://${aws_s3_bucket.ecommerce.bucket}/bronze/"
 
     exclusions = [
       "**/_SUCCESS",
-      "**/_reports"
+      "/_reports/**"
     ]
   }
 
@@ -36,6 +59,9 @@ resource "aws_glue_crawler" "ecommerce_crawler" {
         AddOrUpdateBehavior = "MergeNewColumns"
       }
     }
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
   })
 
   schema_change_policy {
@@ -44,18 +70,93 @@ resource "aws_glue_crawler" "ecommerce_crawler" {
   }
 
   tags = {
-    Name        = "${var.project_name}-crawler"
+    Name        = "${var.project_name}-bronze-crawler"
     Environment = "production"
+    Layer       = "bronze"
   }
 }
 
-output "glue_database_name" {
-  description = "Nome do database Glue criado"
-  value       = aws_glue_catalog_database.ecommerce_database.name
+resource "aws_glue_crawler" "ecommerce_silver_crawler" {
+  database_name = aws_glue_catalog_database.ecommerce_silver.name
+  name          = "${var.project_name}-silver-crawler"
+  role          = aws_iam_role.glue_crawler_role.arn
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.ecommerce.bucket}/silver/"
+
+    exclusions = [
+      "**/_SUCCESS",
+      "**/_temporary/**",
+      "/_reports/**"
+    ]
+  }
+
+  configuration = jsonencode({
+    Version = 1.0
+    CrawlerOutput = {
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
+      Tables = {
+        AddOrUpdateBehavior = "MergeNewColumns"
+      }
+    }
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+
+  schema_change_policy {
+    update_behavior = "UPDATE_IN_DATABASE"
+    delete_behavior = "LOG"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-silver-crawler"
+    Environment = "production"
+    Layer       = "silver"
+  }
 }
 
-# Output do nome do crawler
-output "glue_crawler_name" {
-  description = "Nome do crawler Glue criado"
-  value       = aws_glue_crawler.ecommerce_crawler.name
+# Glue Crawler - Gold Layer
+resource "aws_glue_crawler" "ecommerce_gold_crawler" {
+  database_name = aws_glue_catalog_database.ecommerce_gold.name
+  name          = "${var.project_name}-gold-crawler"
+  role          = aws_iam_role.glue_crawler_role.arn
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.ecommerce.bucket}/gold/"
+
+    exclusions = [
+      "**/_SUCCESS",
+      "**/_temporary/**",
+      "/_reports/**"
+    ]
+  }
+
+  configuration = jsonencode({
+    Version = 1.0
+    CrawlerOutput = {
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
+      Tables = {
+        AddOrUpdateBehavior = "MergeNewColumns"
+      }
+    }
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+
+  schema_change_policy {
+    update_behavior = "UPDATE_IN_DATABASE"
+    delete_behavior = "LOG"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-gold-crawler"
+    Environment = "production"
+    Layer       = "gold"
+  }
 }
