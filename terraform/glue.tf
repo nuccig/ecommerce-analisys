@@ -1,34 +1,34 @@
 resource "aws_glue_catalog_database" "ecommerce_bronze" {
-  name = "${var.project_name}-bronze"
+  name = "bronze"
 
   description = "Bronze layer - Dados brutos do ecommerce"
 
   tags = {
-    Name        = "${var.project_name}-bronze"
+    Name        = "bronze"
     Environment = "production"
     Layer       = "bronze"
   }
 }
 
 resource "aws_glue_catalog_database" "ecommerce_silver" {
-  name = "${var.project_name}-silver"
+  name = "silver"
 
   description = "Silver layer - Dados limpos e padronizados do ecommerce"
 
   tags = {
-    Name        = "${var.project_name}-silver"
+    Name        = "silver"
     Environment = "production"
     Layer       = "silver"
   }
 }
 
 resource "aws_glue_catalog_database" "ecommerce_gold" {
-  name = "${var.project_name}-gold"
+  name = "gold"
 
   description = "Gold layer - Dados agregados e prontos para BI do ecommerce"
 
   tags = {
-    Name        = "${var.project_name}-gold"
+    Name        = "gold"
     Environment = "production"
     Layer       = "gold"
   }
