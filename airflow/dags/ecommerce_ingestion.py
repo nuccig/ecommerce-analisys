@@ -6,9 +6,9 @@ from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Dict, List, Optional
 
-import boto3
 import pandas as pd
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from sqlalchemy import create_engine
 
 from airflow import DAG
@@ -41,10 +41,11 @@ class ExtractionResult:
 class S3Manager:
     """Gerencia operações com S3"""
 
-    def __init__(self, bucket: str, region: str = "us-east-1"):
+    def __init__(self, bucket: str, aws_conn_id: str = "aws_default"):
         self.bucket = bucket
-        self.region = region
-        self.client = boto3.client("s3", region_name=region)
+        self.aws_conn_id = aws_conn_id
+        self.s3_hook = S3Hook(aws_conn_id=aws_conn_id)
+        self.client = self.s3_hook.get_conn()
 
     def _extract_date_from_path(self, s3_key: str) -> Optional[date]:
         """Extrai data do caminho S3"""
@@ -246,11 +247,11 @@ class EcommerceDataExtractor:
         self,
         mysql_connection: str,
         s3_bucket: str,
-        aws_region: str = "us-east-1",
+        aws_conn_id: str = "aws_default",
         max_backfill_days: int = 30,
     ):
         self.db_extractor = DatabaseExtractor(mysql_connection)
-        self.s3_manager = S3Manager(s3_bucket, aws_region)
+        self.s3_manager = S3Manager(s3_bucket, aws_conn_id)
         self.date_calculator = DateCalculator(max_backfill_days)
         self.s3_bucket = s3_bucket
 
@@ -574,32 +575,32 @@ class EcommerceDataExtractor:
 
 S3_BUCKET = "nuccig-data-analysis-ecommerce"
 MYSQL_CONNECTION = "mysql+pymysql://admin:minhasenha123@terraform-20250724042256770800000002.csdsw6cyc9qd.us-east-1.rds.amazonaws.com:3306/ecommerce"
-AWS_REGION = "us-east-1"
+AWS_CONN_ID = "aws_default"
 MAX_BACKFILL_DAYS = 30
 
 
-def extract_mysql_to_s3(**context):
+def extract_mysql_to_s3(data_interval_start: datetime, **context):
     """Wrapper para usar no PythonOperator"""
     extractor = EcommerceDataExtractor(
         mysql_connection=MYSQL_CONNECTION,
         s3_bucket=S3_BUCKET,
-        aws_region=AWS_REGION,
+        aws_conn_id=AWS_CONN_ID,
         max_backfill_days=MAX_BACKFILL_DAYS,
     )
 
-    return extractor.run_extraction(context["execution_date"])
+    return extractor.run_extraction(data_interval_start)
 
 
-def full_extract_mysql_to_s3(**context):
+def full_extract_mysql_to_s3(data_interval_start: datetime, **context):
     """Wrapper para carga completa inicial no PythonOperator"""
     extractor = EcommerceDataExtractor(
         mysql_connection=MYSQL_CONNECTION,
         s3_bucket=S3_BUCKET,
-        aws_region=AWS_REGION,
+        aws_conn_id=AWS_CONN_ID,
         max_backfill_days=MAX_BACKFILL_DAYS,
     )
 
-    return extractor.full_extract(context["execution_date"])
+    return extractor.full_extract(data_interval_start)
 
 
 default_args = {
