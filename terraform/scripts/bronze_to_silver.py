@@ -8,7 +8,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, lit, current_timestamp, current_date, from_unixtime, coalesce, 
+    col, lit, current_timestamp, current_date, coalesce, 
     to_date, year, month, dayofmonth, quarter, weekofyear, dayofweek,
     when, count, sum as sql_sum, max as sql_max, min as sql_min,
     concat, date_format
@@ -53,16 +53,6 @@ print(f"Execution Date: {EXECUTION_DATE}")
 print(f"Incremental: {IS_INCREMENTAL}")
 print(f"Full Refresh: {IS_FULL_REFRESH}")
 print(f"Triggered By: {TRIGGERED_BY}")
-
-def convert_bigint_timestamps(df, timestamp_cols):
-    """Converte colunas bigint para timestamp após carregamento"""
-    for col_name in timestamp_cols:
-        if col_name in df.columns:
-            df = df.withColumn(
-                col_name, 
-                from_unixtime(col(col_name) / 1000000000).cast(TimestampType())
-            )
-    return df
 
 def add_silver_metadata(df):
     """Adiciona metadados padrão da camada Silver"""
@@ -251,50 +241,35 @@ try:
     bronze_tables_config = {
         'vendas': {
             'timestamp_column': 'data_venda',
-            'apply_incremental': True,
-            'timestamp_columns': ['data_venda']
+            'apply_incremental': True
         },
         'itens_venda': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['criado_em']
+            'apply_incremental': True
         },
         'produtos': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['criado_em']
+            'apply_incremental': True
         },
         'clientes': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['data_nascimento', 'criado_em']
+            'apply_incremental': True
         },
         'categorias': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['criado_em']
+            'apply_incremental': True
         },
         'fornecedores': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['criado_em']
+            'apply_incremental': True
         },
         'enderecos': {
             'timestamp_column': 'criado_em',
-            'apply_incremental': True,
-            'timestamp_columns': ['criado_em']
+            'apply_incremental': True
         }
     }
     
     bronze_data = bulk_load_bronze_tables(bronze_tables_config)
-    
-    for table_name, config in bronze_tables_config.items():
-        if 'timestamp_columns' in config:
-            print(f"Convertendo timestamps de {table_name}: {config['timestamp_columns']}")
-            bronze_data[table_name] = convert_bigint_timestamps(
-                bronze_data[table_name], 
-                config['timestamp_columns']
-            )
     
     vendas_bronze = bronze_data['vendas']
     itens_venda_bronze = bronze_data['itens_venda']

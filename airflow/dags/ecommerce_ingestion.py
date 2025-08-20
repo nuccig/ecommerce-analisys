@@ -92,12 +92,27 @@ class S3Manager:
 
     def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict) -> float:
         """Upload DataFrame como Parquet para S3"""
+        df_copy = df.copy()
+        
+        for col in df_copy.columns:
+            is_datetime_type = df_copy[col].dtype == 'datetime64[ns]'
+            is_date_column = any(pattern in col.lower() for pattern in ['data_', '_data', 'date_', '_date', 'created_', 'updated_', 'nascimento'])
+            
+            if is_datetime_type or (is_date_column and df_copy[col].dtype == 'object'):
+                try:
+                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
+                    print(f"Convertendo coluna {col} para timestamp compatível com Spark")
+                except Exception as e:
+                    print(f"Aviso: Não foi possível converter coluna {col}: {e}")
+        
         parquet_buffer = BytesIO()
-        df.to_parquet(
+        df_copy.to_parquet(
             parquet_buffer,
             engine="pyarrow",
             compression="snappy",
             index=False,
+            use_deprecated_int96_timestamps=False,
+            coerce_timestamps='us'
         )
         parquet_buffer.seek(0)
 
@@ -156,8 +171,19 @@ class DatabaseExtractor:
             df = pd.read_sql(sql=query, con=conn.connection)
 
         if not df.empty:
+            # Detectar e tratar colunas timestamp automaticamente
+            for col in df.columns:
+                is_date_column = any(pattern in col.lower() for pattern in ['data_', '_data', 'date_', '_date', 'created_', 'updated_', 'nascimento'])
+                
+                if is_date_column and df[col].dtype == 'object':
+                    try:
+                        df[col] = pd.to_datetime(df[col], errors='coerce').dt.floor('us')
+                        print(f"Convertendo coluna {col} de {table_config.table} para timestamp")
+                    except Exception as e:
+                        print(f"Aviso: Não foi possível converter coluna {col} em {table_config.table}: {e}")
+            
             df["_extraction_date"] = extract_date_str
-            df["_extraction_timestamp"] = datetime.now().isoformat()
+            df["_extraction_timestamp"] = pd.to_datetime(datetime.now()).floor('us')
             df["_source_table"] = table_config.table
 
         return df
