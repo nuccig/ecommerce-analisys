@@ -55,17 +55,13 @@ print(f"Full Refresh: {IS_FULL_REFRESH}")
 print(f"Triggered By: {TRIGGERED_BY}")
 
 def convert_bigint_timestamps(df, timestamp_cols):
-    """Converte colunas bigint para timestamp (nanossegundos)"""
+    """Converte colunas bigint para timestamp após carregamento"""
     for col_name in timestamp_cols:
         if col_name in df.columns:
-            col_type = str(df.schema[col_name].dataType)
-            if 'bigint' in col_type.lower() or 'long' in col_type.lower():
-                df = df.withColumn(
-                    col_name, 
-                    from_unixtime(col(col_name) / 1000000000).cast(TimestampType())
-                )
-            elif col_name in df.columns:
-                df = df.withColumn(col_name, col(col_name).cast(TimestampType()))
+            df = df.withColumn(
+                col_name, 
+                from_unixtime(col(col_name) / 1000000000).cast(TimestampType())
+            )
     return df
 
 def add_silver_metadata(df):
@@ -157,10 +153,6 @@ def load_bronze_table_with_timestamp(table_name, transformation_ctx, timestamp_c
                 transformation_ctx=transformation_ctx
             ).toDF()
         
-        for field in df.schema.fields:
-            if 'timestamp' in str(field.dataType).lower():
-                df = df.withColumn(field.name, col(field.name).cast(TimestampType()))
-        
         return df
         
     except Exception as e:
@@ -182,12 +174,6 @@ def bulk_load_bronze_tables(table_configs):
             timestamp_column=timestamp_col,
             apply_incremental=apply_incremental
         )
-        
-        if 'timestamp_columns' in config:
-            loaded_tables[table_name] = convert_bigint_timestamps(
-                loaded_tables[table_name], 
-                config['timestamp_columns']
-            )
     
     return loaded_tables
 
@@ -301,6 +287,14 @@ try:
     }
     
     bronze_data = bulk_load_bronze_tables(bronze_tables_config)
+    
+    for table_name, config in bronze_tables_config.items():
+        if 'timestamp_columns' in config:
+            print(f"Convertendo timestamps de {table_name}: {config['timestamp_columns']}")
+            bronze_data[table_name] = convert_bigint_timestamps(
+                bronze_data[table_name], 
+                config['timestamp_columns']
+            )
     
     vendas_bronze = bronze_data['vendas']
     itens_venda_bronze = bronze_data['itens_venda']
@@ -652,11 +646,6 @@ report_data = [(
 )]
 
 report_df = spark.createDataFrame(report_data, report_schema)
-
-report_df = report_df.withColumn("last_processed_timestamp", 
-                                col("last_processed_timestamp").cast(TimestampType())) \
-                    .withColumn("processed_at", 
-                                col("processed_at").cast(TimestampType()))
 
 save_to_silver(report_df, "_execution_reports", ["execution_date"])
 
