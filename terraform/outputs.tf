@@ -18,3 +18,8 @@ output "airflow_ssh_command" {
   description = "SSH command to connect to Airflow instance"
   value       = "ssh -i ~/.ssh/minha-keypair-ec2 ubuntu@${aws_instance.airflow.public_dns}"
 }
+
+output "glue_job_role_arn" {
+  description = "ARN da role dos jobs Glue"
+  value       = aws_iam_role.glue_job_role.arn
+}

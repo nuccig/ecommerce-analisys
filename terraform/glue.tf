@@ -161,3 +161,128 @@ resource "aws_glue_crawler" "ecommerce_gold_crawler" {
     Layer       = "gold"
   }
 }
+
+resource "aws_glue_job" "bronze_to_silver" {
+  name         = "${var.project_name}-bronze-to-silver"
+  role_arn     = aws_iam_role.glue_job_role.arn
+  glue_version = "4.0"
+
+  command {
+    script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--job-bookmark-option"              = "job-bookmark-enable"
+    "--enable-metrics"                   = "true"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--enable-spark-ui"                  = "true"
+    "--spark-event-logs-path"            = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-logs/spark-events/"
+    "--TempDir"                          = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-temp/"
+    "--enable-glue-datacatalog"          = "true"
+    "--S3_BUCKET"                        = aws_s3_bucket.ecommerce.bucket
+    "--BRONZE_DATABASE"                  = "bronze"
+    "--SILVER_DATABASE"                  = "silver"
+  }
+
+  max_retries = 3
+  timeout     = 60 # 60 minutos
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  worker_type       = "G.1X"
+  number_of_workers = 5
+
+  tags = {
+    Name        = "${var.project_name}-bronze-to-silver"
+    Environment = "production"
+    Layer       = "silver"
+    Type        = "etl"
+  }
+}
+
+resource "aws_glue_job" "bronze_to_silver_incremental" {
+  name         = "${var.project_name}-bronze-to-silver-incremental"
+  role_arn     = aws_iam_role.glue_job_role.arn
+  glue_version = "4.0"
+
+  command {
+    script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--job-bookmark-option"              = "job-bookmark-enable"
+    "--enable-metrics"                   = "true"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--enable-spark-ui"                  = "true"
+    "--spark-event-logs-path"            = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-logs/spark-events/"
+    "--TempDir"                          = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-temp/"
+    "--enable-glue-datacatalog"          = "true"
+    "--S3_BUCKET"                        = aws_s3_bucket.ecommerce.bucket
+    "--BRONZE_DATABASE"                  = "bronze"
+    "--SILVER_DATABASE"                  = "silver"
+    "--INCREMENTAL"                      = "true"
+  }
+
+  max_retries = 3
+  timeout     = 30
+
+  execution_property {
+    max_concurrent_runs = 2
+  }
+
+  worker_type       = "G.1X"
+  number_of_workers = 3
+
+  tags = {
+    Name        = "${var.project_name}-bronze-to-silver-incremental"
+    Environment = "production"
+    Layer       = "silver"
+    Type        = "etl-incremental"
+  }
+}
+
+resource "aws_glue_trigger" "bronze_to_silver_daily_3am" {
+  name = "${var.project_name}-bronze-to-silver-daily-3am"
+  type = "SCHEDULED"
+
+  schedule = "cron(0 6 * * ? *)"
+
+  actions {
+    job_name = aws_glue_job.bronze_to_silver_incremental.name
+    arguments = {
+      "--execution_date" = "$${aws.glue.trigger.execution_date}"
+      "--incremental"    = "true"
+      "--triggered_by"   = "daily_schedule"
+    }
+  }
+
+  tags = {
+    Name        = "${var.project_name}-bronze-to-silver-daily-3am"
+    Environment = "production"
+    Schedule    = "daily-3am-brazil"
+  }
+}
+
+resource "aws_glue_trigger" "bronze_to_silver_on_demand" {
+  name = "${var.project_name}-bronze-to-silver-on-demand"
+  type = "ON_DEMAND"
+
+  actions {
+    job_name = aws_glue_job.bronze_to_silver.name
+    arguments = {
+      "--triggered_by" = "manual_execution"
+    }
+  }
+
+  tags = {
+    Name        = "${var.project_name}-bronze-to-silver-on-demand"
+    Environment = "production"
+    Type        = "manual"
+  }
+}
