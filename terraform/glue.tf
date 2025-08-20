@@ -189,8 +189,8 @@ resource "aws_glue_job" "bronze_to_silver_full" {
     "--triggered_by"                     = "manual"
   }
 
-  max_retries = 3
-  timeout     = 60 # 60 minutos
+  max_retries = 1
+  timeout     = 60
 
   execution_property {
     max_concurrent_runs = 1
