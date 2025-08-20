@@ -24,7 +24,6 @@ args = getResolvedOptions(sys.argv, [
     'S3_BUCKET', 
     'BRONZE_DATABASE', 
     'SILVER_DATABASE',
-    'execution_date',
     'incremental',
     'full_refresh',
     'triggered_by'
@@ -45,7 +44,7 @@ S3_SILVER_PATH = f"s3://{S3_BUCKET}/silver/"
 BRONZE_DATABASE = args['BRONZE_DATABASE']
 SILVER_DATABASE = args['SILVER_DATABASE']
 
-EXECUTION_DATE = args.get('execution_date', datetime.now().strftime('%Y-%m-%d'))
+EXECUTION_DATE = datetime.now().strftime('%Y-%m-%d')
 IS_INCREMENTAL = args.get('incremental', 'false').lower() == 'true'
 IS_FULL_REFRESH = args.get('full_refresh', 'false').lower() == 'true'
 TRIGGERED_BY = args.get('triggered_by', 'manual')
@@ -59,10 +58,14 @@ def convert_bigint_timestamps(df, timestamp_cols):
     """Converte colunas bigint para timestamp (nanossegundos)"""
     for col_name in timestamp_cols:
         if col_name in df.columns:
-            df = df.withColumn(
-                col_name, 
-                from_unixtime(col(col_name) / 1000000000).cast(TimestampType())
-            )
+            col_type = str(df.schema[col_name].dataType)
+            if 'bigint' in col_type.lower() or 'long' in col_type.lower():
+                df = df.withColumn(
+                    col_name, 
+                    from_unixtime(col(col_name) / 1000000000).cast(TimestampType())
+                )
+            elif col_name in df.columns:
+                df = df.withColumn(col_name, col(col_name).cast(TimestampType()))
     return df
 
 def add_silver_metadata(df):
@@ -134,19 +137,31 @@ def load_bronze_table_with_timestamp(table_name, transformation_ctx, timestamp_c
             
             if timestamp_filter:
                 print(f"Carregando {table_name} com filtro incremental: {timestamp_filter}")
-                return glueContext.create_dynamic_frame.from_catalog(
+                df = glueContext.create_dynamic_frame.from_catalog(
                     database=BRONZE_DATABASE,
                     table_name=table_name,
                     push_down_predicate=timestamp_filter,
                     transformation_ctx=transformation_ctx
                 ).toDF()
+            else:
+                df = glueContext.create_dynamic_frame.from_catalog(
+                    database=BRONZE_DATABASE,
+                    table_name=table_name,
+                    transformation_ctx=transformation_ctx
+                ).toDF()
+        else:
+            print(f"Carregando {table_name} completa")
+            df = glueContext.create_dynamic_frame.from_catalog(
+                database=BRONZE_DATABASE,
+                table_name=table_name,
+                transformation_ctx=transformation_ctx
+            ).toDF()
         
-        print(f"Carregando {table_name} completa")
-        return glueContext.create_dynamic_frame.from_catalog(
-            database=BRONZE_DATABASE,
-            table_name=table_name,
-            transformation_ctx=transformation_ctx
-        ).toDF()
+        for field in df.schema.fields:
+            if 'timestamp' in str(field.dataType).lower():
+                df = df.withColumn(field.name, col(field.name).cast(TimestampType()))
+        
+        return df
         
     except Exception as e:
         print(f"Erro ao carregar {table_name}: {str(e)}")
@@ -606,21 +621,6 @@ stats = {
 for key, value in stats.items():
     print(f"{key}: {value}")
 
-report_data = [(
-    EXECUTION_DATE,
-    TRIGGERED_BY,
-    IS_INCREMENTAL,
-    quality_metrics.get('facts_vendas_count', 0),
-    quality_metrics.get('facts_vendas_total_value', 0),
-    quality_metrics.get('facts_vendas_total_items', 0),
-    quality_metrics.get('produtos_sem_categoria', 0),
-    quality_metrics.get('produtos_sem_fornecedor', 0),
-    quality_metrics.get('vendas_sem_cliente', 0),
-    quality_metrics.get('vendas_sem_produto', 0),
-    max_processed_timestamp,
-    datetime.now()
-)]
-
 report_schema = StructType([
     StructField("execution_date", StringType(), True),
     StructField("triggered_by", StringType(), True),
@@ -636,7 +636,28 @@ report_schema = StructType([
     StructField("processed_at", TimestampType(), True)
 ])
 
+report_data = [(
+    EXECUTION_DATE,
+    TRIGGERED_BY,
+    IS_INCREMENTAL,
+    quality_metrics.get('facts_vendas_count', 0),
+    float(quality_metrics.get('facts_vendas_total_value', 0.0)),
+    quality_metrics.get('facts_vendas_total_items', 0),
+    quality_metrics.get('produtos_sem_categoria', 0),
+    quality_metrics.get('produtos_sem_fornecedor', 0),
+    quality_metrics.get('vendas_sem_cliente', 0),
+    quality_metrics.get('vendas_sem_produto', 0),
+    max_processed_timestamp,
+    datetime.now()
+)]
+
 report_df = spark.createDataFrame(report_data, report_schema)
+
+report_df = report_df.withColumn("last_processed_timestamp", 
+                                col("last_processed_timestamp").cast(TimestampType())) \
+                    .withColumn("processed_at", 
+                                col("processed_at").cast(TimestampType()))
+
 save_to_silver(report_df, "_execution_reports", ["execution_date"])
 
 job.commit()

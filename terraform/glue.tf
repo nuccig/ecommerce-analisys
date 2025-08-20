@@ -261,10 +261,9 @@ resource "aws_glue_trigger" "bronze_to_silver_daily_3am" {
   actions {
     job_name = aws_glue_job.bronze_to_silver_incremental.name
     arguments = {
-      "--execution_date" = "$${format('%s', timestamp())}"
-      "--incremental"    = "true"
-      "--full_refresh"   = "false"
-      "--triggered_by"   = "daily_schedule"
+      "--incremental"  = "true"
+      "--full_refresh" = "false"
+      "--triggered_by" = "daily_schedule"
     }
   }
 
@@ -282,10 +281,9 @@ resource "aws_glue_trigger" "bronze_to_silver_on_demand" {
   actions {
     job_name = aws_glue_job.bronze_to_silver_full.name
     arguments = {
-      "--execution_date" = "$${formatdate('YYYY-MM-DD', timestamp())}"
-      "--incremental"    = "false"
-      "--full_refresh"   = "true"
-      "--triggered_by"   = "manual_execution"
+      "--incremental"  = "false"
+      "--full_refresh" = "true"
+      "--triggered_by" = "manual_execution"
     }
   }
 
