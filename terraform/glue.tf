@@ -184,7 +184,9 @@ resource "aws_glue_job" "bronze_to_silver_full" {
     "--S3_BUCKET"                        = aws_s3_bucket.ecommerce.bucket
     "--BRONZE_DATABASE"                  = "bronze"
     "--SILVER_DATABASE"                  = "silver"
-    "--INCREMENTAL"                      = "false"
+    "--incremental"                      = "false"
+    "--full_refresh"                     = "true"
+    "--triggered_by"                     = "manual"
   }
 
   max_retries = 3
@@ -227,7 +229,9 @@ resource "aws_glue_job" "bronze_to_silver_incremental" {
     "--S3_BUCKET"                        = aws_s3_bucket.ecommerce.bucket
     "--BRONZE_DATABASE"                  = "bronze"
     "--SILVER_DATABASE"                  = "silver"
-    "--INCREMENTAL"                      = "true"
+    "--incremental"                      = "true"
+    "--full_refresh"                     = "false"
+    "--triggered_by"                     = "scheduled"
   }
 
   max_retries = 3
@@ -257,8 +261,9 @@ resource "aws_glue_trigger" "bronze_to_silver_daily_3am" {
   actions {
     job_name = aws_glue_job.bronze_to_silver_incremental.name
     arguments = {
-      "--execution_date" = "$${aws.glue.trigger.execution_date}"
+      "--execution_date" = "$${format('%s', timestamp())}"
       "--incremental"    = "true"
+      "--full_refresh"   = "false"
       "--triggered_by"   = "daily_schedule"
     }
   }
@@ -277,7 +282,10 @@ resource "aws_glue_trigger" "bronze_to_silver_on_demand" {
   actions {
     job_name = aws_glue_job.bronze_to_silver_full.name
     arguments = {
-      "--triggered_by" = "manual_execution"
+      "--execution_date" = "$${formatdate('YYYY-MM-DD', timestamp())}"
+      "--incremental"    = "false"
+      "--full_refresh"   = "true"
+      "--triggered_by"   = "manual_execution"
     }
   }
 
