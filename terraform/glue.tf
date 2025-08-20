@@ -162,8 +162,8 @@ resource "aws_glue_crawler" "ecommerce_gold_crawler" {
   }
 }
 
-resource "aws_glue_job" "bronze_to_silver" {
-  name         = "${var.project_name}-bronze-to-silver"
+resource "aws_glue_job" "bronze_to_silver_full" {
+  name         = "${var.project_name}-bronze-to-silver-full"
   role_arn     = aws_iam_role.glue_job_role.arn
   glue_version = "4.0"
 
@@ -184,6 +184,7 @@ resource "aws_glue_job" "bronze_to_silver" {
     "--S3_BUCKET"                        = aws_s3_bucket.ecommerce.bucket
     "--BRONZE_DATABASE"                  = "bronze"
     "--SILVER_DATABASE"                  = "silver"
+    "--INCREMENTAL"                      = "false"
   }
 
   max_retries = 3
@@ -274,7 +275,7 @@ resource "aws_glue_trigger" "bronze_to_silver_on_demand" {
   type = "ON_DEMAND"
 
   actions {
-    job_name = aws_glue_job.bronze_to_silver.name
+    job_name = aws_glue_job.bronze_to_silver_full.name
     arguments = {
       "--triggered_by" = "manual_execution"
     }

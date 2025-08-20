@@ -7,8 +7,16 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+from pyspark.sql.functions import (
+    col, lit, current_timestamp, current_date, from_unixtime, coalesce, 
+    to_date, year, month, dayofmonth, quarter, weekofyear, dayofweek,
+    when, count, sum as sql_sum, max as sql_max, min as sql_min,
+    concat, date_format
+)
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, 
+    DoubleType, BooleanType, TimestampType, DateType, LongType
+)
 from awsglue.dynamicframe import DynamicFrame
 
 args = getResolvedOptions(sys.argv, [
@@ -78,131 +86,301 @@ def apply_basic_filters(df, table_name):
         # Filtros básicos gerais
         return df.filter(col("id").isNotNull())
 
+def get_last_processed_timestamp(table_name):
+    """Recupera o último timestamp processado para uma tabela específica"""
+    try:
+        last_report = glueContext.create_dynamic_frame.from_catalog(
+            database=SILVER_DATABASE,
+            table_name="_execution_reports",
+            transformation_ctx=f"load_last_report_{table_name}"
+        ).toDF()
+        
+        last_successful = last_report.filter(
+            (col("is_incremental") == True) & 
+            (col("total_records") > 0)
+        ).orderBy(col("processed_at").desc()).limit(1)
+        
+        if last_successful.count() > 0:
+            last_timestamp = last_successful.select("last_processed_timestamp").collect()[0][0]
+            print(f"Último timestamp processado para {table_name}: {last_timestamp}")
+            return last_timestamp
+        else:
+            print(f"Nenhuma execução anterior encontrada para {table_name}, processando últimos 7 dias")
+            return None
+            
+    except Exception as e:
+        print(f"Erro ao recuperar último timestamp para {table_name}: {str(e)}")
+        print("Processando todos os dados como fallback")
+        return None
+
+def get_incremental_filter_by_timestamp(table_name, timestamp_column="criado_em"):
+    """Retorna filtro baseado no último timestamp processado"""
+    if IS_INCREMENTAL:
+        last_timestamp = get_last_processed_timestamp(table_name)
+        
+        if last_timestamp:
+            timestamp_str = last_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            return f"{timestamp_column} > '{timestamp_str}'"
+        else:
+            return f"{timestamp_column} >= date_sub(current_date(), 365)"
+    
+    return None
+
+def load_bronze_table_with_timestamp(table_name, transformation_ctx, timestamp_column="criado_em", apply_incremental=False):
+    """Carrega tabela bronze com filtro baseado em timestamp"""
+    try:
+        if IS_INCREMENTAL and apply_incremental:
+            timestamp_filter = get_incremental_filter_by_timestamp(table_name, timestamp_column)
+            
+            if timestamp_filter:
+                print(f"Carregando {table_name} com filtro incremental: {timestamp_filter}")
+                return glueContext.create_dynamic_frame.from_catalog(
+                    database=BRONZE_DATABASE,
+                    table_name=table_name,
+                    push_down_predicate=timestamp_filter,
+                    transformation_ctx=transformation_ctx
+                ).toDF()
+        
+        print(f"Carregando {table_name} completa")
+        return glueContext.create_dynamic_frame.from_catalog(
+            database=BRONZE_DATABASE,
+            table_name=table_name,
+            transformation_ctx=transformation_ctx
+        ).toDF()
+        
+    except Exception as e:
+        print(f"Erro ao carregar {table_name}: {str(e)}")
+        raise
+
+def bulk_load_bronze_tables(table_configs):
+    """Carrega múltiplas tabelas bronze de uma vez"""
+    loaded_tables = {}
+    
+    for table_name, config in table_configs.items():
+        timestamp_col = config.get('timestamp_column', 'criado_em')
+        apply_incremental = config.get('apply_incremental', True)
+        
+        print(f"Carregando {table_name}...")
+        loaded_tables[table_name] = load_bronze_table_with_timestamp(
+            table_name, 
+            f"{table_name}_bronze",
+            timestamp_column=timestamp_col,
+            apply_incremental=apply_incremental
+        )
+        
+        if 'timestamp_columns' in config:
+            loaded_tables[table_name] = convert_bigint_timestamps(
+                loaded_tables[table_name], 
+                config['timestamp_columns']
+            )
+    
+    return loaded_tables
+
+def create_dimension_with_mapping(df, table_name, column_mappings, join_tables=None):
+    """Cria dimensão aplicando mapeamento de colunas e joins"""
+    
+    if join_tables:
+        for join_config in join_tables:
+            join_df = join_config['df']
+            join_condition = join_config['condition']
+            join_type = join_config.get('type', 'left')
+            alias = join_config.get('alias')
+            
+            if alias:
+                join_df = join_df.alias(alias)
+            
+            df = df.join(join_df, join_condition, join_type)
+    
+    select_cols = [col(old_col).alias(new_col) for old_col, new_col in column_mappings.items()]
+    
+    dim_df = df.select(*select_cols).distinct()
+    
+    dim_df = add_silver_metadata(apply_basic_filters(dim_df, table_name))
+    
+    print(f"{table_name.upper()} criada: {dim_df.count()} registros")
+    return dim_df
+
+def get_max_timestamp_from_multiple_tables(table_timestamp_mapping):
+    """Calcula o maior timestamp de múltiplas tabelas"""
+    max_timestamps = {}
+    
+    for table_name, (df, timestamp_col) in table_timestamp_mapping.items():
+        if df.count() > 0:
+            max_val = df.agg(sql_max(timestamp_col)).collect()[0][0]
+            if max_val:
+                max_timestamps[table_name] = max_val
+    
+    if max_timestamps:
+        overall_max = max(max_timestamps.values())
+        print(f"Maior timestamp processado: {overall_max}")
+        print(f"Detalhes por tabela: {max_timestamps}")
+        return overall_max
+    
+    return datetime.now()
+
+def calculate_data_quality_metrics(tables_dict):
+    """Calcula métricas de qualidade de dados de forma otimizada"""
+    metrics = {}
+    
+    if 'dim_produtos' in tables_dict:
+        produtos_df = tables_dict['dim_produtos']
+        metrics['produtos_sem_categoria'] = produtos_df.filter(col("categoria_nome").isNull()).count()
+        metrics['produtos_sem_fornecedor'] = produtos_df.filter(col("fornecedor_nome").isNull()).count()
+    
+    if 'facts_vendas' in tables_dict:
+        vendas_df = tables_dict['facts_vendas']
+        metrics['vendas_sem_cliente'] = vendas_df.filter(col("dim_cliente_id").isNull()).count()
+        metrics['vendas_sem_produto'] = vendas_df.filter(col("dim_produto_id").isNull()).count()
+        
+        aggregations = vendas_df.agg(
+            count("*").alias("total_records"),
+            sql_sum("total_venda").alias("total_value"),
+            sql_sum("quantidade").alias("total_items")
+        ).collect()[0]
+        
+        metrics.update({
+            'facts_vendas_count': aggregations['total_records'],
+            'facts_vendas_total_value': aggregations['total_value'] or 0,
+            'facts_vendas_total_items': aggregations['total_items'] or 0
+        })
+    
+    return metrics
+
 try:
-    # Carregar todas as tabelas bronze
-    vendas_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="vendas",
-        transformation_ctx="vendas_bronze"
-    ).toDF()
+    bronze_tables_config = {
+        'vendas': {
+            'timestamp_column': 'data_venda',
+            'apply_incremental': True,
+            'timestamp_columns': ['data_venda']
+        },
+        'itens_venda': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['criado_em']
+        },
+        'produtos': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['criado_em']
+        },
+        'clientes': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['data_nascimento', 'criado_em']
+        },
+        'categorias': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['criado_em']
+        },
+        'fornecedores': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['criado_em']
+        },
+        'enderecos': {
+            'timestamp_column': 'criado_em',
+            'apply_incremental': True,
+            'timestamp_columns': ['criado_em']
+        }
+    }
+    
+    bronze_data = bulk_load_bronze_tables(bronze_tables_config)
+    
+    vendas_bronze = bronze_data['vendas']
+    itens_venda_bronze = bronze_data['itens_venda']
+    produtos_bronze = bronze_data['produtos']
+    clientes_bronze = bronze_data['clientes']
+    categorias_bronze = bronze_data['categorias']
+    fornecedores_bronze = bronze_data['fornecedores']
+    enderecos_bronze = bronze_data['enderecos']
 
-    produtos_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="produtos",
-        transformation_ctx="produtos_bronze"
-    ).toDF()
-
-    clientes_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="clientes",
-        transformation_ctx="clientes_bronze"
-    ).toDF()
-
-    categorias_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="categorias",
-        transformation_ctx="categorias_bronze"
-    ).toDF()
-
-    fornecedores_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="fornecedores",
-        transformation_ctx="fornecedores_bronze"
-    ).toDF()
-
-    enderecos_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="enderecos",
-        transformation_ctx="enderecos_bronze"
-    ).toDF()
-
-    itens_venda_bronze = glueContext.create_dynamic_frame.from_catalog(
-        database=BRONZE_DATABASE,
-        table_name="itens_venda",
-        transformation_ctx="itens_venda_bronze"
-    ).toDF()
-
-    print(f"Dados carregados: {vendas_bronze.count()} vendas, {produtos_bronze.count()} produtos")
+    print(f"Carregamento concluído: {vendas_bronze.count()} vendas, {produtos_bronze.count()} produtos")
 
 except Exception as e:
     print(f"Erro ao carregar dados Bronze: {str(e)}")
     raise
 
-# Converter timestamps
-timestamp_columns = ["data_venda", "criado_em", "data_nascimento"]
+# DIM_FORNECEDORES
+dim_fornecedores_mapping = {
+    "id": "fornecedor_id",
+    "nome": "fornecedor_nome",
+    "email": "fornecedor_email",
+    "telefone": "fornecedor_telefone",
+    "cnpj": "fornecedor_cnpj",
+    "endereco": "fornecedor_endereco",
+    "cidade": "fornecedor_cidade",
+    "estado": "fornecedor_estado",
+    "cep": "fornecedor_cep",
+    "ativo": "fornecedor_ativo",
+    "criado_em": "fornecedor_criado_em"
+}
 
-vendas_bronze = convert_bigint_timestamps(vendas_bronze, ["data_venda"])
-clientes_bronze = convert_bigint_timestamps(clientes_bronze, ["data_nascimento", "criado_em"])
-produtos_bronze = convert_bigint_timestamps(produtos_bronze, ["criado_em"])
-categorias_bronze = convert_bigint_timestamps(categorias_bronze, ["criado_em"])
-fornecedores_bronze = convert_bigint_timestamps(fornecedores_bronze, ["criado_em"])
-enderecos_bronze = convert_bigint_timestamps(enderecos_bronze, ["criado_em"])
+dim_fornecedores = create_dimension_with_mapping(
+    fornecedores_bronze, 
+    "dim_fornecedores", 
+    dim_fornecedores_mapping
+)
 
-# Dimensões
+# DIM_CATEGORIAS
+dim_categorias_mapping = {
+    "id": "categoria_id",
+    "nome": "categoria_nome",
+    "descricao": "categoria_descricao",
+    "ativa": "categoria_ativa",
+    "criado_em": "categoria_criado_em"
+}
 
-# DIM_FORNECEDORES - Dimensão de Fornecedores
-dim_fornecedores = fornecedores_bronze.select(
-    col("id").alias("fornecedor_id"),
-    col("nome").alias("fornecedor_nome"),
-    col("email").alias("fornecedor_email"),
-    col("telefone").alias("fornecedor_telefone"),
-    col("cnpj").alias("fornecedor_cnpj"),
-    col("endereco").alias("fornecedor_endereco"),
-    col("cidade").alias("fornecedor_cidade"),
-    col("estado").alias("fornecedor_estado"),
-    col("cep").alias("fornecedor_cep"),
-    col("ativo").alias("fornecedor_ativo"),
-    col("criado_em").alias("fornecedor_criado_em")
-).distinct()
+dim_categorias = create_dimension_with_mapping(
+    categorias_bronze, 
+    "dim_categorias", 
+    dim_categorias_mapping
+)
 
-dim_fornecedores = add_silver_metadata(apply_basic_filters(dim_fornecedores, "dim_fornecedores"))
-print(f"DIM_FORNECEDORES criada: {dim_fornecedores.count()} registros")
+# DIM_PRODUTOS
+dim_produtos_mapping = {
+    "id": "produto_id",
+    "nome": "produto_nome",
+    "descricao": "produto_descricao",
+    "categoria_id": "categoria_id",
+    "fornecedor_id": "fornecedor_id",
+    "preco": "produto_preco",
+    "custo": "produto_custo",
+    "peso": "produto_peso",
+    "quantidade_estoque": "produto_quantidade_estoque",
+    "em_estoque": "produto_em_estoque",
+    "ativo": "produto_ativo",
+    "criado_em": "produto_criado_em",
+    "cat.nome": "categoria_nome",
+    "cat.descricao": "categoria_descricao",
+    "forn.nome": "fornecedor_nome",
+    "forn.email": "fornecedor_email",
+    "forn.telefone": "fornecedor_telefone"
+}
 
-# DIM_CATEGORIAS - Dimensão de Categorias
-dim_categorias = categorias_bronze.select(
-    col("id").alias("categoria_id"),
-    col("nome").alias("categoria_nome"),
-    col("descricao").alias("categoria_descricao"),
-    col("ativa").alias("categoria_ativa"),
-    col("criado_em").alias("categoria_criado_em")
-).distinct()
+dim_produtos_joins = [
+    {
+        'df': categorias_bronze,
+        'condition': col("categoria_id") == col("cat.id"),
+        'type': 'left',
+        'alias': 'cat'
+    },
+    {
+        'df': fornecedores_bronze,
+        'condition': col("fornecedor_id") == col("forn.id"),
+        'type': 'left',
+        'alias': 'forn'
+    }
+]
 
-dim_categorias = add_silver_metadata(apply_basic_filters(dim_categorias, "dim_categorias"))
-print(f"DIM_CATEGORIAS criada: {dim_categorias.count()} registros")
+dim_produtos = create_dimension_with_mapping(
+    produtos_bronze,
+    "dim_produtos",
+    dim_produtos_mapping,
+    join_tables=dim_produtos_joins
+)
 
-# DIM_PRODUTOS - Dimensão de Produtos
-dim_produtos = produtos_bronze.join(
-    categorias_bronze.alias("cat"), 
-    col("categoria_id") == col("cat.id"), 
-    "left"
-).join(
-    fornecedores_bronze.alias("forn"), 
-    col("fornecedor_id") == col("forn.id"), 
-    "left"
-).select(
-    col("id").alias("produto_id"),
-    col("nome").alias("produto_nome"),
-    col("descricao").alias("produto_descricao"),
-    col("categoria_id").alias("categoria_id"),
-    col("fornecedor_id").alias("fornecedor_id"),
-    col("preco").alias("produto_preco"),
-    col("custo").alias("produto_custo"),
-    col("peso").alias("produto_peso"),
-    col("quantidade_estoque").alias("produto_quantidade_estoque"),
-    col("em_estoque").alias("produto_em_estoque"),
-    col("ativo").alias("produto_ativo"),
-    col("criado_em").alias("produto_criado_em"),
-    col("cat.nome").alias("categoria_nome"),
-    col("cat.descricao").alias("categoria_descricao"),
-    col("forn.nome").alias("fornecedor_nome"),
-    col("forn.email").alias("fornecedor_email"),
-    col("forn.telefone").alias("fornecedor_telefone")
-).distinct()
-
-dim_produtos = add_silver_metadata(apply_basic_filters(dim_produtos, "dim_produtos"))
-print(f"DIM_PRODUTOS criada: {dim_produtos.count()} registros")
-
-# DIM_CLIENTES - Dimensão de Clientes
+# DIM_CLIENTES - Com colunas calculadas
 dim_clientes = clientes_bronze.select(
     col("id").alias("cliente_id"),
     col("nome").alias("cliente_nome"),
@@ -220,25 +398,28 @@ dim_clientes = clientes_bronze.select(
 dim_clientes = add_silver_metadata(apply_basic_filters(dim_clientes, "dim_clientes"))
 print(f"DIM_CLIENTES criada: {dim_clientes.count()} registros")
 
-# DIM_ENDERECOS - Dimensão de Endereços
-dim_enderecos = enderecos_bronze.select(
-    col("id").alias("endereco_id"),
-    col("cliente_id").alias("cliente_id"),
-    col("cep").alias("endereco_cep"),
-    col("logradouro").alias("endereco_logradouro"),
-    col("numero").alias("endereco_numero"),
-    col("complemento").alias("endereco_complemento"),
-    col("bairro").alias("endereco_bairro"),
-    col("cidade").alias("endereco_cidade"),
-    col("estado").alias("endereco_estado"),
-    col("endereco_principal").alias("endereco_principal"),
-    col("criado_em").alias("endereco_criado_em")
-).distinct()
+# DIM_ENDERECOS
+dim_enderecos_mapping = {
+    "id": "endereco_id",
+    "cliente_id": "cliente_id",
+    "cep": "endereco_cep",
+    "logradouro": "endereco_logradouro",
+    "numero": "endereco_numero",
+    "complemento": "endereco_complemento",
+    "bairro": "endereco_bairro",
+    "cidade": "endereco_cidade",
+    "estado": "endereco_estado",
+    "endereco_principal": "endereco_principal",
+    "criado_em": "endereco_criado_em"
+}
 
-dim_enderecos = add_silver_metadata(apply_basic_filters(dim_enderecos, "dim_enderecos"))
-print(f"DIM_ENDERECOS criada: {dim_enderecos.count()} registros")
+dim_enderecos = create_dimension_with_mapping(
+    enderecos_bronze,
+    "dim_enderecos",
+    dim_enderecos_mapping
+)
 
-# DIM_TEMPO - Dimensão de Tempo
+# DIM_TEMPO
 dim_tempo = vendas_bronze.select(
     to_date(col("data_venda")).alias("data"),
     year(col("data_venda")).alias("ano"),
@@ -302,30 +483,112 @@ def save_to_silver(df, table_name, partition_keys=[]):
             "partitionKeys": partition_keys
         }
         
-        glueContext.write_dynamic_frame.from_options(
-            frame=dyf,
-            connection_type="s3",
-            connection_options=write_options,
-            format="parquet",
-            transformation_ctx=f"write_{table_name}"
-        )
+        if IS_INCREMENTAL and table_name == "facts_vendas":
+
+            print(f"Salvando {table_name} em modo incremental (partition overwrite)")
+            glueContext.write_dynamic_frame.from_options(
+                frame=dyf,
+                connection_type="s3",
+                connection_options=write_options,
+                format="parquet",
+                format_options={
+                    "writeMode": "append",
+                    "partitionOverwriteMode": "dynamic"
+                },
+                transformation_ctx=f"write_{table_name}"
+            )
+        elif IS_INCREMENTAL and table_name.startswith("dim_"):
+
+            print(f"Salvando {table_name} em modo incremental (overwrite completo)")
+            glueContext.write_dynamic_frame.from_options(
+                frame=dyf,
+                connection_type="s3",
+                connection_options=write_options,
+                format="parquet",
+                format_options={"writeMode": "overwrite"},
+                transformation_ctx=f"write_{table_name}"
+            )
+        else:
+
+            print(f"Salvando {table_name} em modo completo (overwrite)")
+            glueContext.write_dynamic_frame.from_options(
+                frame=dyf,
+                connection_type="s3",
+                connection_options=write_options,
+                format="parquet",
+                format_options={"writeMode": "overwrite"},
+                transformation_ctx=f"write_{table_name}"
+            )
         
-        print(f"{table_name} salva com sucesso - {df.count()} registros")
+        mode = "incremental" if IS_INCREMENTAL else "full"
+        print(f"{table_name} salva com sucesso - {df.count()} registros ({mode})")
         
     except Exception as e:
         print(f"Erro ao salvar {table_name}: {str(e)}")
         raise
 
-save_to_silver(dim_fornecedores, "dim_fornecedores")
-save_to_silver(dim_categorias, "dim_categorias")
-save_to_silver(dim_produtos, "dim_produtos")
-save_to_silver(dim_clientes, "dim_clientes")
-save_to_silver(dim_enderecos, "dim_enderecos")
-save_to_silver(dim_tempo, "dim_tempo", ["ano", "mes"])
+def bulk_save_to_silver(tables_dict, partition_configs=None):
+    """Salva múltiplas tabelas para Silver"""
+    if partition_configs is None:
+        partition_configs = {}
+    
+    print(f"Iniciando salvamento bulk de {len(tables_dict)} tabelas...")
+    
+    saved_tables = {}
+    
+    for table_name, df in tables_dict.items():
+        partition_keys = partition_configs.get(table_name, [])
+        
+        try:
+            print(f"Salvando {table_name}...")
+            save_to_silver(df, table_name, partition_keys)
+            saved_tables[table_name] = {
+                'status': 'success',
+                'records': df.count()
+            }
+        except Exception as e:
+            print(f"Erro ao salvar {table_name}: {str(e)}")
+            saved_tables[table_name] = {
+                'status': 'failed',
+                'error': str(e)
+            }
+            raise
+    
+    total_records = sum([info['records'] for info in saved_tables.values() if info['status'] == 'success'])
+    print(f"Bulk save concluído: {len(saved_tables)} tabelas, {total_records:,} registros totais")
+    
+    return saved_tables
 
-save_to_silver(facts_vendas, "facts_vendas", ["ano", "mes", "dia"])
+silver_tables = {
+    'dim_fornecedores': dim_fornecedores,
+    'dim_categorias': dim_categorias,
+    'dim_produtos': dim_produtos,
+    'dim_clientes': dim_clientes,
+    'dim_enderecos': dim_enderecos,
+    'dim_tempo': dim_tempo,
+    'facts_vendas': facts_vendas
+}
 
-# Calcular estatísticas
+partition_configs = {
+    'dim_tempo': ['ano', 'mes'],
+    'facts_vendas': ['ano', 'mes', 'dia']
+}
+
+save_results = bulk_save_to_silver(silver_tables, partition_configs)
+
+timestamp_mapping = {
+    'vendas': (vendas_bronze, 'data_venda'),
+    'clientes': (clientes_bronze, 'criado_em'),
+    'produtos': (produtos_bronze, 'criado_em'),
+    'categorias': (categorias_bronze, 'criado_em'),
+    'fornecedores': (fornecedores_bronze, 'criado_em'),
+    'enderecos': (enderecos_bronze, 'criado_em')
+}
+
+max_processed_timestamp = get_max_timestamp_from_multiple_tables(timestamp_mapping)
+
+quality_metrics = calculate_data_quality_metrics(silver_tables)
+
 stats = {
     "execution_date": EXECUTION_DATE,
     "triggered_by": TRIGGERED_BY,
@@ -336,37 +599,25 @@ stats = {
     "dim_clientes_count": dim_clientes.count(), 
     "dim_enderecos_count": dim_enderecos.count(),
     "dim_tempo_count": dim_tempo.count(),
-    "facts_vendas_count": facts_vendas.count(),
-    "facts_vendas_total_value": facts_vendas.agg(sum("total_venda")).collect()[0][0] or 0,
-    "facts_vendas_total_items": facts_vendas.agg(sum("quantidade")).collect()[0][0] or 0
+    **quality_metrics
 }
 
-# Integridade
+# Log das estatísticas
 for key, value in stats.items():
     print(f"{key}: {value}")
 
-produtos_sem_categoria = dim_produtos.filter(col("categoria_nome").isNull()).count()
-produtos_sem_fornecedor = dim_produtos.filter(col("fornecedor_nome").isNull()).count()
-vendas_sem_cliente = facts_vendas.filter(col("dim_cliente_id").isNull()).count()
-vendas_sem_produto = facts_vendas.filter(col("dim_produto_id").isNull()).count()
-
-print(f"Produtos sem categoria: {produtos_sem_categoria}")
-print(f"Produtos sem fornecedor: {produtos_sem_fornecedor}")
-print(f"Vendas sem cliente: {vendas_sem_cliente}")
-print(f"Vendas sem produto: {vendas_sem_produto}")
-
-# Salvar relatório de execução
 report_data = [(
     EXECUTION_DATE,
     TRIGGERED_BY,
     IS_INCREMENTAL,
-    stats["facts_vendas_count"],
-    stats["facts_vendas_total_value"],
-    stats["facts_vendas_total_items"],
-    produtos_sem_categoria,
-    produtos_sem_fornecedor,
-    vendas_sem_cliente,
-    vendas_sem_produto,
+    quality_metrics.get('facts_vendas_count', 0),
+    quality_metrics.get('facts_vendas_total_value', 0),
+    quality_metrics.get('facts_vendas_total_items', 0),
+    quality_metrics.get('produtos_sem_categoria', 0),
+    quality_metrics.get('produtos_sem_fornecedor', 0),
+    quality_metrics.get('vendas_sem_cliente', 0),
+    quality_metrics.get('vendas_sem_produto', 0),
+    max_processed_timestamp,
     datetime.now()
 )]
 
@@ -381,6 +632,7 @@ report_schema = StructType([
     StructField("produtos_sem_fornecedor", LongType(), True),
     StructField("vendas_sem_cliente", LongType(), True),
     StructField("vendas_sem_produto", LongType(), True),
+    StructField("last_processed_timestamp", TimestampType(), True),
     StructField("processed_at", TimestampType(), True)
 ])
 
