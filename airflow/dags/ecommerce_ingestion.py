@@ -62,7 +62,7 @@ class S3Manager:
         schema_fields = []
         
         type_mapping = {
-            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.floor('us'), pa.timestamp('us'), "timestamp"),
+            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "timestamp"),
             'date': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "date"),
             'int32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.int32(), "int"),
             'uint32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.uint32(), "int"),
@@ -82,15 +82,6 @@ class S3Manager:
             if col_type and col_type in type_mapping:
                 transform_func, pa_type, hive_type = type_mapping[col_type]
                 df_copy[col] = transform_func(col)
-            elif col.endswith('_timestamp'):
-                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
-                pa_type, hive_type = pa.timestamp('us'), "timestamp"
-            elif col == '_extraction_date':
-                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.date
-                pa_type, hive_type = pa.date32(), "date"
-            else:
-                df_copy[col] = df_copy[col].astype('string')
-                pa_type, hive_type = pa.string(), "string"
             
             field = pa.field(col, pa_type).with_metadata({"HIVE_TYPE_STRING": hive_type})
             schema_fields.append(field)
@@ -333,7 +324,7 @@ class EcommerceDataExtractor:
 
         extraction_summary = {}
         total_extracted_records = 0
-        extract_date = execution_datetime.date()
+        extract_date = pd.to_datetime(execution_datetime).date()
 
         try:
             for table_name, table_config in self.table_configs.items():
