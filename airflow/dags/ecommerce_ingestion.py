@@ -1,6 +1,5 @@
 import json
 import logging
-import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -12,8 +11,6 @@ from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from sqlalchemy import create_engine
 
 from airflow import DAG
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 @dataclass
 class TableConfig:
@@ -53,62 +50,12 @@ class S3Manager:
             ContentType="application/json",
         )
 
-    def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict, table_schemas: Dict = None) -> float:
-        """Upload DataFrame como Parquet para S3 com schema otimizado"""
-        table_name = metadata.get("table_name", s3_key.split('/')[1])
-        table_schema = table_schemas.get(table_name, {}) if table_schemas else {}
-                
-        df_copy = df.copy()
-        schema_fields = []
-        
-        type_mapping = {
-            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce'), pa.timestamp('us'), "timestamp"),
-            'date': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "date"),
-            'int32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.int32(), "int"),
-            'uint32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.uint32(), "int"),
-            'int64': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int64'), pa.int64(), "bigint"),
-            'bigint': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int64'), pa.int64(), "bigint"),
-            'uint64': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('uint64'), pa.uint64(), "bigint"),
-            'decimal': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('float64'), pa.float64(), "double"),
-            'bool': (lambda c: df_copy[c].astype('boolean'), pa.bool_(), "boolean"),
-            'time': (lambda c: df_copy[c].astype('string'), pa.string(), "string"),
-            'string': (lambda c: df_copy[c].astype('string'), pa.string(), "string"),
-        }
-        
-        metadata_columns = {
-            '_extraction_date': 'date',
-            '_extraction_timestamp': 'timestamp', 
-            '_source_table': 'string'
-        }
-        
-        for col in df_copy.columns:
-            col_type = None
-            
-            if col in metadata_columns:
-                col_type = metadata_columns[col]
-            else:
-                col_type = table_schema.get(col)
-            
-            if col_type and col_type in type_mapping:
-                transform_func, pa_type, hive_type = type_mapping[col_type]
-                df_copy[col] = transform_func(col)
-            else:
-                df_copy[col] = df_copy[col].astype('string')
-                pa_type = pa.string()
-                hive_type = "string"
-            
-            field = pa.field(col, pa_type).with_metadata({"HIVE_TYPE_STRING": hive_type})
-            schema_fields.append(field)
-        
+    def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict) -> float:
+        """Upload DataFrame como Parquet para S3"""
         parquet_buffer = BytesIO()
-        try:
-            table = pa.Table.from_pandas(df_copy, schema=pa.schema(schema_fields), preserve_index=False)
-            pq.write_table(table, parquet_buffer, compression='snappy', 
-                          use_deprecated_int96_timestamps=False, coerce_timestamps='us')
-        except Exception as e:
-            print(f"Schema dinâmico falhou, usando padrão: {e}")
-            df_copy.to_parquet(parquet_buffer, engine="pyarrow", compression="snappy", 
-                              index=False, use_deprecated_int96_timestamps=False)
+        
+        df.to_parquet(parquet_buffer, engine="pyarrow", compression="snappy", 
+                      index=False, use_deprecated_int96_timestamps=False)
         
         parquet_buffer.seek(0)
         
@@ -125,7 +72,6 @@ class DatabaseExtractor:
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self._engine = None
-        self._table_schemas = {}
 
     @property
     def engine(self):
@@ -159,81 +105,7 @@ class DatabaseExtractor:
         with self.engine.connect() as conn:
             df = pd.read_sql(sql=query, con=conn.connection)
 
-        if not df.empty:
-            df["_extraction_date"] = extract_date
-            df["_extraction_timestamp"] = pd.Timestamp.now()
-            df["_source_table"] = table_config.table
-
         return df
-  
-    def get_table_schema(self, table_name: str) -> Dict:
-        """Extrai schema da tabela diretamente do MySQL"""
-        if table_name in self._table_schemas:
-            return self._table_schemas[table_name]
-        
-        try:
-            
-            with self.engine.connect() as conn:
-                query = f"""
-                    SELECT 
-                        COLUMN_NAME,
-                        DATA_TYPE,
-                        IS_NULLABLE,
-                        COLUMN_DEFAULT,
-                        COLUMN_TYPE,
-                        EXTRA
-                    FROM INFORMATION_SCHEMA.COLUMNS 
-                    WHERE TABLE_SCHEMA = DATABASE() 
-                    AND TABLE_NAME = '{table_name}'
-                    ORDER BY ORDINAL_POSITION
-                """
-                    
-                df = pd.read_sql(sql=query, con=conn.connection)
-            
-            schema = {}
-            for _, row in df.iterrows():
-                col_name = row['COLUMN_NAME']
-                data_type = row['DATA_TYPE'].lower()
-                column_type = row['COLUMN_TYPE'].lower()
-                
-                if data_type in ['int', 'integer', 'tinyint', 'smallint', 'mediumint']:
-                    if 'unsigned' in column_type:
-                        schema[col_name] = 'uint32'
-                    else:
-                        schema[col_name] = 'int32'
-                elif data_type == 'bigint':
-                    if 'unsigned' in column_type:
-                        schema[col_name] = 'uint64'
-                    else:
-                        schema[col_name] = 'bigint'
-                elif data_type in ['decimal', 'numeric', 'float', 'double']:
-                    schema[col_name] = 'decimal'
-                elif data_type == 'boolean':
-                    schema[col_name] = 'bool'
-                elif data_type == 'date':
-                    schema[col_name] = 'date'
-                elif data_type in ['datetime', 'timestamp']:
-                    schema[col_name] = 'timestamp'
-                elif data_type == 'time':
-                    schema[col_name] = 'time'
-                else:
-                    schema[col_name] = 'string'
-            
-            self._table_schemas[table_name] = schema
-            logging.info(f"Schema extraído para {table_name}: {len(schema)} colunas")
-            
-            return schema
-            
-        except Exception as e:
-            logging.error(f"Erro ao extrair schema de {table_name}: {str(e)}")
-            return {}
-        
-    def get_all_table_schemas(self, table_names: List[str]) -> Dict:
-        """Extrai schemas de todas as tabelas de uma vez"""
-        schemas = {}
-        for table_name in table_names:
-            schemas[table_name] = self.get_table_schema(table_name)
-        return schemas
 
 class S3PathBuilder:
     """Constrói caminhos S3 padronizados"""
@@ -274,8 +146,6 @@ class EcommerceDataExtractor:
             "enderecos": TableConfig("enderecos", "criado_em", True),
         }
 
-        self.table_schemas = self._load_table_schemas()
-
     def extract_single_table_date(
         self, table_name: str, table_config: TableConfig, extract_date: date
     ) -> ExtractionResult:
@@ -307,7 +177,7 @@ class EcommerceDataExtractor:
                 "compression": "snappy",
             }
 
-            file_size_mb = self.s3_manager.upload_parquet(df, s3_key, metadata, self.table_schemas)
+            file_size_mb = self.s3_manager.upload_parquet(df, s3_key, metadata)
 
             logging.info(
                 f"{table_name} - {extract_date_str}: {len(df)} registros → {s3_key}"
@@ -386,25 +256,6 @@ class EcommerceDataExtractor:
 
         finally:
             self.db_extractor.dispose()
-
-    def _load_table_schemas(self) -> Dict:
-        """Carrega schemas de todas as tabelas do banco de dados"""
-        try:
-            table_names = list(self.table_configs.keys())
-            schemas = self.db_extractor.get_all_table_schemas(table_names)
-            
-            logging.info(f"Schemas carregados para {len(schemas)} tabelas:")
-            for table_name, schema in schemas.items():
-                logging.info(f"  {table_name}: {len(schema)} colunas")
-                # Log dos tipos para debug
-                for col, tipo in schema.items():
-                    if tipo in ['timestamp', 'date']:
-                        logging.info(f"    {col}: {tipo}")
-            
-            return schemas
-        except Exception as e:
-            logging.error(f"Erro ao carregar schemas: {str(e)}")
-            return {}
 
     def _generate_report(
         self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
