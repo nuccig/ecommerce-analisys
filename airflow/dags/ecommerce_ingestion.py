@@ -156,7 +156,7 @@ class DatabaseExtractor:
 
         if not df.empty:
             df["_extraction_date"] = extract_date
-            df["_extraction_timestamp"] = pd.Timestamp.now().floor('us')
+            df["_extraction_timestamp"] = pd.Timestamp.now()
             df["_source_table"] = table_config.table
 
         return df
