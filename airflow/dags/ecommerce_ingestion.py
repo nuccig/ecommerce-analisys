@@ -264,22 +264,23 @@ class DatabaseExtractor:
             return self._table_schemas[table_name]
         
         try:
-            query = """
-            SELECT 
-                COLUMN_NAME,
-                DATA_TYPE,
-                IS_NULLABLE,
-                COLUMN_DEFAULT,
-                COLUMN_TYPE,
-                EXTRA
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = %s
-            ORDER BY ORDINAL_POSITION
-            """
             
             with self.engine.connect() as conn:
-                df = pd.read_sql(query, conn, params=[table_name])
+                query = f"""
+                    SELECT 
+                        COLUMN_NAME,
+                        DATA_TYPE,
+                        IS_NULLABLE,
+                        COLUMN_DEFAULT,
+                        COLUMN_TYPE,
+                        EXTRA
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = {table_name}
+                    ORDER BY ORDINAL_POSITION
+                """
+                    
+                df = pd.read_sql(sql=query, con=conn.connection)
             
             schema = {}
             for _, row in df.iterrows():
@@ -508,7 +509,7 @@ class EcommerceDataExtractor:
                             if table_config.date_column
                             else None
                         ),
-                        incremental=bool(table_config.date_column),
+                        incremental=False,
                     )
 
                     result = self.extract_single_table_date(
