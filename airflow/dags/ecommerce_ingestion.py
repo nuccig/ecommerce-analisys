@@ -54,108 +54,64 @@ class S3Manager:
         )
 
     def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict, table_schemas: Dict = None) -> float:
-        """Upload DataFrame como Parquet para S3"""
-        
-        df_copy = df.copy()
-        
-        table_name = s3_key.split('/')[1]  # bronze/table_name/...
-        
+        """Upload DataFrame como Parquet para S3 com schema otimizado"""
+        table_name = metadata.get("table_name", s3_key.split('/')[1])
         table_schema = table_schemas.get(table_name, {}) if table_schemas else {}
-        
+                
+        df_copy = df.copy()
         schema_fields = []
         
-        for col in df_copy.columns:
-            if col in table_schema:
-                col_type = table_schema[col]
-                
-                if col_type == 'timestamp':
-                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
-                    schema_fields.append(pa.field(col, pa.timestamp('us')))
-                    print(f"Coluna {col}: timestamp(us)")
-                    
-                elif col_type == 'date':
-                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.date
-                    schema_fields.append(pa.field(col, pa.date32()))
-                    print(f"Coluna {col}: date32")
-                    
-                elif col_type in ['int32', 'uint32']:
-                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('Int32')
-                    schema_fields.append(pa.field(col, pa.int32() if col_type == 'int32' else pa.uint32()))
-                    print(f"Coluna {col}: {col_type}")
-                    
-                elif col_type == 'int64':
-                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('Int64')
-                    schema_fields.append(pa.field(col, pa.int64()))
-                    print(f"Coluna {col}: int64")
-                    
-                elif col_type == 'decimal':
-                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('float64')
-                    schema_fields.append(pa.field(col, pa.float64()))
-                    print(f"Coluna {col}: float64 (decimal)")
-                    
-                elif col_type == 'bool':
-                    df_copy[col] = df_copy[col].astype('boolean')
-                    schema_fields.append(pa.field(col, pa.bool_()))
-                    print(f"Coluna {col}: bool")
-                    
-                elif col_type == 'time':
-                    df_copy[col] = df_copy[col].astype('string')
-                    schema_fields.append(pa.field(col, pa.string()))
-                    print(f"Coluna {col}: string (time)")
-                    
-                else:  # string
-                    df_copy[col] = df_copy[col].astype('string')
-                    schema_fields.append(pa.field(col, pa.string()))
-                    print(f"Coluna {col}: string")
-            else:
-                if col.endswith('_timestamp'):
-                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
-                    schema_fields.append(pa.field(col, pa.timestamp('us')))
-                elif col.endswith('_date'):
-                    schema_fields.append(pa.field(col, pa.string()))
-                else:
-                    schema_fields.append(pa.field(col, pa.string()))
+        type_mapping = {
+            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.floor('us'), pa.timestamp('us'), "timestamp"),
+            'date': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "date"),
+            'int32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.int32(), "int"),
+            'uint32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.uint32(), "int"),
+            'int64': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int64'), pa.int64(), "bigint"),
+            'bigint': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int64'), pa.int64(), "bigint"),
+            'uint64': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('uint64'), pa.uint64(), "bigint"),
+            'decimal': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('float64'), pa.float64(), "double"),
+            'bool': (lambda c: df_copy[c].astype('boolean'), pa.bool_(), "boolean"),
+            'time': (lambda c: df_copy[c].astype('string'), pa.string(), "string"),
+            'string': (lambda c: df_copy[c].astype('string'), pa.string(), "string"),
+        }
         
-        schema = pa.schema(schema_fields)
+        for col in df_copy.columns:
+            col_type = table_schema.get(col)
+            
+            # Processar coluna baseado no tipo
+            if col_type and col_type in type_mapping:
+                transform_func, pa_type, hive_type = type_mapping[col_type]
+                df_copy[col] = transform_func(col)
+            elif col.endswith('_timestamp'):
+                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
+                pa_type, hive_type = pa.timestamp('us'), "timestamp"
+            elif col == '_extraction_date':
+                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.date
+                pa_type, hive_type = pa.date32(), "date"
+            else:
+                df_copy[col] = df_copy[col].astype('string')
+                pa_type, hive_type = pa.string(), "string"
+            
+            field = pa.field(col, pa_type).with_metadata({"HIVE_TYPE_STRING": hive_type})
+            schema_fields.append(field)
         
         parquet_buffer = BytesIO()
-        
         try:
-            table = pa.Table.from_pandas(df_copy, schema=schema, preserve_index=False)
-            
-            pq.write_table(
-                table,
-                parquet_buffer,
-                compression='snappy',
-                use_deprecated_int96_timestamps=False,
-                coerce_timestamps='us',
-                allow_truncated_timestamps=True
-            )
-            print(f"Parquet criado com schema dinâmico para {table_name}")
-            
+            table = pa.Table.from_pandas(df_copy, schema=pa.schema(schema_fields), preserve_index=False)
+            pq.write_table(table, parquet_buffer, compression='snappy', 
+                          use_deprecated_int96_timestamps=False, coerce_timestamps='us')
         except Exception as e:
-            print(f"Erro com schema dinâmico para {table_name}, usando método padrão: {e}")
-
-            df_copy.to_parquet(
-                parquet_buffer,
-                engine="pyarrow",
-                compression="snappy",
-                index=False,
-                use_deprecated_int96_timestamps=False,
-                coerce_timestamps='us',
-                allow_truncated_timestamps=True
-            )
+            print(f"Schema dinâmico falhou, usando padrão: {e}")
+            df_copy.to_parquet(parquet_buffer, engine="pyarrow", compression="snappy", 
+                              index=False, use_deprecated_int96_timestamps=False)
         
         parquet_buffer.seek(0)
-
+        
         self.client.put_object(
-            Bucket=self.bucket,
-            Key=s3_key,
-            Body=parquet_buffer.getvalue(),
-            ContentType="application/octet-stream",
-            Metadata=metadata,
+            Bucket=self.bucket, Key=s3_key, Body=parquet_buffer.getvalue(),
+            ContentType="application/octet-stream", Metadata=metadata
         )
-
+        
         return round(len(parquet_buffer.getvalue()) / (1024 * 1024), 2)
 
 class DatabaseExtractor:
@@ -199,8 +155,8 @@ class DatabaseExtractor:
             df = pd.read_sql(sql=query, con=conn.connection)
 
         if not df.empty:
-            df["_extraction_date"] = extract_date_str
-            df["_extraction_timestamp"] = datetime.now()
+            df["_extraction_date"] = extract_date
+            df["_extraction_timestamp"] = pd.Timestamp.now().floor('us')
             df["_source_table"] = table_config.table
 
         return df
@@ -241,7 +197,10 @@ class DatabaseExtractor:
                     else:
                         schema[col_name] = 'int32'
                 elif data_type == 'bigint':
-                    schema[col_name] = 'int64'
+                    if 'unsigned' in column_type:
+                        schema[col_name] = 'uint64'
+                    else:
+                        schema[col_name] = 'bigint'
                 elif data_type in ['decimal', 'numeric', 'float', 'double']:
                     schema[col_name] = 'decimal'
                 elif data_type == 'boolean':
@@ -441,43 +400,6 @@ class EcommerceDataExtractor:
         except Exception as e:
             logging.error(f"Erro ao carregar schemas: {str(e)}")
             return {}
-
-    def _get_all_dates_in_table(self, table_config: TableConfig) -> List[date]:
-        """
-        Busca todas as datas únicas presentes na tabela para carga completa
-        """
-        try:
-            query = f"""
-            SELECT DISTINCT DATE({table_config.date_column}) as date_value
-            FROM {table_config.table}
-            WHERE {table_config.date_column} IS NOT NULL
-            ORDER BY date_value
-            """
-
-            logging.info(f"{table_config.table}: Buscando todas as datas disponíveis")
-
-            with self.db_extractor.engine.connect() as conn:
-                df = pd.read_sql(sql=query, con=conn.connection)
-
-            if df.empty:
-                logging.warning(
-                    f"{table_config.table}: Nenhuma data encontrada na coluna {table_config.date_column}"
-                )
-                return []
-
-            dates = [
-                pd.to_datetime(row["date_value"]).date() for _, row in df.iterrows()
-            ]
-
-            logging.info(
-                f"{table_config.table}: {len(dates)} datas únicas encontradas para carga completa"
-            )
-        except Exception as e:
-            logging.error(f"Erro durante extração: {str(e)}")
-            return {"status": "error", "error": str(e)}
-
-        finally:
-            self.db_extractor.dispose()
 
     def _generate_report(
         self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
