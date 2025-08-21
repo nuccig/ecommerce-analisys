@@ -23,7 +23,6 @@ class TableConfig:
     date_column: str | None
     incremental: bool
 
-
 @dataclass
 class ExtractionResult:
     """Resultado de uma extração"""
@@ -36,7 +35,6 @@ class ExtractionResult:
     error: Optional[str] = None
     file_size_mb: float = 0.0
 
-
 class S3Manager:
     """Gerencia operações com S3"""
 
@@ -45,29 +43,6 @@ class S3Manager:
         self.aws_conn_id = aws_conn_id
         self.s3_hook = S3Hook(aws_conn_id=aws_conn_id)
         self.client = self.s3_hook.get_conn()
-
-    def get_last_extracted_date(self, table_name: str) -> Optional[date]:
-        """Busca a última data extraída para uma tabela no S3"""
-        try:
-            prefix = f"bronze/{table_name}/"
-            paginator = self.client.get_paginator("list_objects_v2")
-            page_iterator = paginator.paginate(
-                Bucket=self.bucket, Prefix=prefix, Delimiter="/"
-            )
-
-            dates = []
-            for page in page_iterator:
-                if "Contents" in page:
-                    for obj in page["Contents"]:
-                        date = self._extract_date_from_path(obj["Key"])
-                        if date:
-                            dates.append(date)
-
-            return max(dates) if dates else None
-
-        except Exception as e:
-            logging.warning(f"Erro ao buscar última data para {table_name}: {str(e)}")
-            return None
 
     def upload_json(self, data: Dict, s3_key: str):
         """Upload JSON para S3"""
@@ -183,34 +158,13 @@ class S3Manager:
 
         return round(len(parquet_buffer.getvalue()) / (1024 * 1024), 2)
 
-    def _extract_date_from_path(self, s3_key: str) -> Optional[date]:
-        """Extrai data do caminho S3"""
-        try:
-            parts = s3_key.split("/")
-            if (
-                len(parts) >= 5
-                and "year=" in parts[2]
-                and "month=" in parts[3]
-                and "day=" in parts[4]
-            ):
-
-                year = parts[2].split("=")[1]
-                month = parts[3].split("=")[1]
-                day = parts[4].split("=")[1]
-                date_str = f"{year}-{month}-{day}"
-                return datetime.strptime(date_str, "%Y-%m-%d").date()
-        except (ValueError, IndexError):
-            pass
-        return None
-
-
 class DatabaseExtractor:
     """Gerencia extração de dados do banco"""
 
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self._engine = None
-        self._table_schemas = {} 
+        self._table_schemas = {}
 
     @property
     def engine(self):
@@ -250,14 +204,7 @@ class DatabaseExtractor:
             df["_source_table"] = table_config.table
 
         return df
-
-    def get_all_table_schemas(self, table_names: List[str]) -> Dict:
-        """Extrai schemas de todas as tabelas de uma vez"""
-        schemas = {}
-        for table_name in table_names:
-            schemas[table_name] = self.get_table_schema(table_name)
-        return schemas
-
+  
     def get_table_schema(self, table_name: str) -> Dict:
         """Extrai schema da tabela diretamente do MySQL"""
         if table_name in self._table_schemas:
@@ -316,62 +263,13 @@ class DatabaseExtractor:
         except Exception as e:
             logging.error(f"Erro ao extrair schema de {table_name}: {str(e)}")
             return {}
-
-
-class DateCalculator:
-    """Calcula datas para extração"""
-
-    def __init__(self, max_backfill_days: int = 30):
-        self.max_backfill_days = max_backfill_days
-
-    def get_dates_to_extract(
-        self,
-        s3_manager: S3Manager,
-        table_name: str,
-        execution_date: datetime,
-        table_config: TableConfig,
-    ) -> List[date]:
-        """Determina quais datas precisam ser extraídas"""
-
-        if not table_config.incremental:
-            return [execution_date.date()]
-
-        last_extracted_date = s3_manager.get_last_extracted_date(table_name)
-
-        if last_extracted_date is None:
-            logging.info(
-                f"Primeira extração para {table_name}. Extraindo: {execution_date.date()}"
-            )
-            return [execution_date.date()]
-
-        current_date = execution_date.date()
-        start_date = last_extracted_date + timedelta(days=1)
-
-        if start_date > current_date:
-            logging.info(f"{table_name} já está atualizado até {last_extracted_date}")
-            return []
-
-        dates_to_extract = []
-        date_iter = start_date
-        days_count = 0
-
-        while date_iter <= current_date and days_count < self.max_backfill_days:
-            dates_to_extract.append(date_iter)
-            date_iter += timedelta(days=1)
-            days_count += 1
-
-        if days_count >= self.max_backfill_days:
-            logging.warning(
-                f"{table_name}: Limitado a {self.max_backfill_days} dias de backfill. "
-                f"Último extraído: {last_extracted_date}"
-            )
-
-        logging.info(
-            f"{table_name}: Extraindo {len(dates_to_extract)} datas - "
-            f"de {start_date} até {current_date}"
-        )
-        return dates_to_extract
-
+        
+    def get_all_table_schemas(self, table_names: List[str]) -> Dict:
+        """Extrai schemas de todas as tabelas de uma vez"""
+        schemas = {}
+        for table_name in table_names:
+            schemas[table_name] = self.get_table_schema(table_name)
+        return schemas
 
 class S3PathBuilder:
     """Constrói caminhos S3 padronizados"""
@@ -389,7 +287,6 @@ class S3PathBuilder:
         """Constrói caminho para relatório"""
         return f"bronze/_reports/extraction_report_{execution_date.strftime('%Y-%m-%d')}.json"
 
-
 class EcommerceDataExtractor:
     """Classe principal para extração de dados do e-commerce"""
 
@@ -398,11 +295,9 @@ class EcommerceDataExtractor:
         mysql_connection: str,
         s3_bucket: str,
         aws_conn_id: str = "aws_default",
-        max_backfill_days: int = 30,
     ):
         self.db_extractor = DatabaseExtractor(mysql_connection)
         self.s3_manager = S3Manager(s3_bucket, aws_conn_id)
-        self.date_calculator = DateCalculator(max_backfill_days)
         self.s3_bucket = s3_bucket
 
         self.table_configs = {
@@ -473,135 +368,44 @@ class EcommerceDataExtractor:
                 error=str(e),
             )
 
-    def full_extract(self, execution_datetime: datetime) -> Dict:
-        """
-        Executa uma carga completa inicial de todas as tabelas,
-        reutilizando a infraestrutura existente
-        """
-        logging.info("Iniciando carga completa inicial de dados do e-commerce")
-
-        extraction_summary = {}
-        total_extracted_records = 0
-
-        try:
-            for table_name, table_config in self.table_configs.items():
-                logging.info(f"Processando carga completa da tabela: {table_name}")
-
-                if table_config.date_column:
-                    dates_to_extract = self._get_all_dates_in_table(table_config)
-                    if not dates_to_extract:
-                        logging.info(
-                            f"{table_name}: Nenhuma data encontrada, extraindo como snapshot"
-                        )
-                        dates_to_extract = [execution_datetime.date()]
-                else:
-                    dates_to_extract = [execution_datetime.date()]
-
-                table_records = 0
-                processed_dates = []
-
-                for extract_date in dates_to_extract:
-
-                    temp_config = TableConfig(
-                        table=table_config.table,
-                        date_column=(
-                            table_config.date_column
-                            if table_config.date_column
-                            else None
-                        ),
-                        incremental=False,
-                    )
-
-                    result = self.extract_single_table_date(
-                        table_name, temp_config, extract_date
-                    )
-
-                    if result.status == "success":
-                        table_records += result.records
-                        processed_dates.append(result.extract_date)
-                    elif result.status in ["empty", "no_data"]:
-                        processed_dates.append(result.extract_date)
-
-                extraction_summary[table_name] = {
-                    "records": table_records,
-                    "status": "success" if table_records > 0 else "no_data",
-                    "dates_processed": processed_dates,
-                    "total_partitions": len(dates_to_extract),
-                    "extraction_type": "full_load_partitioned",
-                    "format": "parquet",
-                }
-
-                total_extracted_records += table_records
-                logging.info(
-                    f"{table_name}: {table_records} registros totais em {len(processed_dates)} partições"
-                )
-
-            report = self._generate_full_load_report(
-                execution_datetime, extraction_summary, total_extracted_records
-            )
-
-            report_key = f"bronze/_reports/full_load_report_{execution_datetime.strftime('%Y-%m-%d_%H-%M-%S')}.json"
-            self.s3_manager.upload_json(report, report_key)
-
-            logging.info(f"Relatório de carga completa salvo: {report_key}")
-            logging.info(
-                f"Carga completa finalizada: {total_extracted_records} registros totais extraídos"
-            )
-
-            return report
-
-        finally:
-            self.db_extractor.dispose()
-
     def run_extraction(self, execution_datetime: datetime) -> Dict:
-        """Executa extração completa"""
+        """Executa extração para a data de execução"""
         logging.info("Iniciando extração de dados do e-commerce")
 
         extraction_summary = {}
         total_extracted_records = 0
+        extract_date = execution_datetime.date()
 
         try:
             for table_name, table_config in self.table_configs.items():
                 logging.info(f"Processando tabela: {table_name}")
 
-                dates_to_extract = self.date_calculator.get_dates_to_extract(
-                    self.s3_manager, table_name, execution_datetime, table_config
+                result = self.extract_single_table_date(
+                    table_name, table_config, extract_date
                 )
 
-                if not dates_to_extract:
-                    extraction_summary[table_name] = {
-                        "records": 0,
-                        "status": "up_to_date",
-                        "dates_processed": [],
-                    }
-                    continue
-
-                table_records = 0
-                processed_dates = []
-
-                for extract_date in dates_to_extract:
-                    result = self.extract_single_table_date(
-                        table_name, table_config, extract_date
-                    )
-
-                    if result.status == "success":
-                        table_records += result.records
-                        processed_dates.append(result.extract_date)
-                    elif result.status in ["empty", "no_data"]:
-                        processed_dates.append(result.extract_date)
+                if result.status == "success":
+                    table_records = result.records
+                    processed_dates = [result.extract_date]
+                    status = "success"
+                elif result.status in ["empty", "no_data"]:
+                    table_records = 0
+                    processed_dates = [result.extract_date]
+                    status = "no_data"
+                else:
+                    table_records = 0
+                    processed_dates = []
+                    status = "error"
 
                 extraction_summary[table_name] = {
                     "records": table_records,
-                    "status": "success" if table_records > 0 else "no_data",
+                    "status": status,
                     "dates_processed": processed_dates,
-                    "backfill_days": len(dates_to_extract),
                     "format": "parquet",
                 }
 
                 total_extracted_records += table_records
-                logging.info(
-                    f"{table_name}: {table_records} registros totais em {len(processed_dates)} datas"
-                )
+                logging.info(f"{table_name}: {table_records} registros extraídos")
 
             report = self._generate_report(
                 execution_datetime, extraction_summary, total_extracted_records
@@ -668,59 +472,12 @@ class EcommerceDataExtractor:
             logging.info(
                 f"{table_config.table}: {len(dates)} datas únicas encontradas para carga completa"
             )
-            return dates
-
         except Exception as e:
-            logging.error(f"{table_config.table}: Erro ao buscar datas - {str(e)}")
-            return []
+            logging.error(f"Erro durante extração: {str(e)}")
+            return {"status": "error", "error": str(e)}
 
-    def _generate_full_load_report(
-        self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
-    ) -> Dict:
-        """
-        Gera relatório específico para carga completa,
-        """
-
-        base_report = self._generate_report(
-            execution_datetime, extraction_summary, total_records
-        )
-
-        successful_tables = [
-            t for t in extraction_summary.values() if t["status"] == "success"
-        ]
-        total_partitions = sum(
-            t.get("total_partitions", 1) for t in extraction_summary.values()
-        )
-
-        base_report.update(
-            {
-                "dag_id": "ecommerce_mysql_to_s3_bronze_full_load",
-                "extraction_type": "full_load_partitioned",
-                "total_partitions": total_partitions,
-                "summary_stats": {
-                    "largest_table_records": (
-                        max(successful_tables, key=lambda x: x["records"])["records"]
-                        if successful_tables
-                        else 0
-                    ),
-                    "total_partitions_created": total_partitions,
-                    "avg_records_per_partition": (
-                        round(total_records / total_partitions, 2)
-                        if total_partitions > 0
-                        else 0
-                    ),
-                    "tables_with_multiple_partitions": len(
-                        [
-                            t
-                            for t in successful_tables
-                            if t.get("total_partitions", 1) > 1
-                        ]
-                    ),
-                },
-            }
-        )
-
-        return base_report
+        finally:
+            self.db_extractor.dispose()
 
     def _generate_report(
         self, execution_datetime: datetime, extraction_summary: Dict, total_records: int
@@ -732,23 +489,19 @@ class EcommerceDataExtractor:
             "execution_timestamp": datetime.now().isoformat(),
             "status": "completed",
             "format": "parquet",
-            "backfill_enabled": True,
-            "max_backfill_days": self.date_calculator.max_backfill_days,
             "total_tables": len(self.table_configs),
             "successful_extractions": len(
                 [t for t in extraction_summary.values() if t["status"] == "success"]
             ),
             "total_records": total_records,
-            "table_summary": extraction_summary,
-            "s3_bucket": self.s3_bucket,
+            "bucket": self.s3_bucket,
+            "tables": extraction_summary,
         }
 
-
+# Configurações
 S3_BUCKET = "nuccig-data-analysis-ecommerce"
 MYSQL_CONNECTION = "mysql+pymysql://admin:minhasenha123@terraform-20250724042256770800000002.csdsw6cyc9qd.us-east-1.rds.amazonaws.com:3306/ecommerce"
 AWS_CONN_ID = "aws_default"
-MAX_BACKFILL_DAYS = 30
-
 
 def extract_mysql_to_s3(data_interval_start: datetime, **context):
     """Wrapper para usar no PythonOperator"""
@@ -756,26 +509,12 @@ def extract_mysql_to_s3(data_interval_start: datetime, **context):
         mysql_connection=MYSQL_CONNECTION,
         s3_bucket=S3_BUCKET,
         aws_conn_id=AWS_CONN_ID,
-        max_backfill_days=MAX_BACKFILL_DAYS,
     )
 
     return extractor.run_extraction(data_interval_start)
 
-
-def full_extract_mysql_to_s3(data_interval_start: datetime, **context):
-    """Wrapper para carga completa inicial no PythonOperator"""
-    extractor = EcommerceDataExtractor(
-        mysql_connection=MYSQL_CONNECTION,
-        s3_bucket=S3_BUCKET,
-        aws_conn_id=AWS_CONN_ID,
-        max_backfill_days=MAX_BACKFILL_DAYS,
-    )
-
-    return extractor.full_extract(data_interval_start)
-
-
 default_args = {
-    "owner": "data-team",
+    "owner": "gustavo-nucci",
     "depends_on_past": False,
     "start_date": datetime(2025, 8, 1),
     "email_on_failure": False,
@@ -793,24 +532,8 @@ dag = DAG(
     tags=["bronze", "ecommerce", "mysql"],
 )
 
-# DAG para carga completa inicial (execução manual)
-dag_full_load = DAG(
-    "ecommerce_mysql_to_s3_bronze_full_load",
-    default_args=default_args,
-    description="Carga Completa Inicial E-commerce MySQL para S3 Bronze",
-    schedule=None,  # Apenas execução manual
-    catchup=False,
-    tags=["bronze", "ecommerce", "mysql", "full-load", "initial"],
-)
-
 extract_task = PythonOperator(
     task_id="extract_mysql_to_s3_bronze",
     python_callable=extract_mysql_to_s3,
     dag=dag,
-)
-
-full_extract_task = PythonOperator(
-    task_id="full_extract_mysql_to_s3_bronze",
-    python_callable=full_extract_mysql_to_s3,
-    dag=dag_full_load,
 )
