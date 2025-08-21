@@ -62,7 +62,7 @@ class S3Manager:
         schema_fields = []
         
         type_mapping = {
-            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "timestamp"),
+            'timestamp': (lambda c: pd.to_datetime(df_copy[c], errors='coerce'), pa.timestamp('us'), "timestamp"),
             'date': (lambda c: pd.to_datetime(df_copy[c], errors='coerce').dt.date, pa.date32(), "date"),
             'int32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.int32(), "int"),
             'uint32': (lambda c: pd.to_numeric(df_copy[c], errors='coerce').astype('Int32'), pa.uint32(), "int"),
@@ -75,13 +75,27 @@ class S3Manager:
             'string': (lambda c: df_copy[c].astype('string'), pa.string(), "string"),
         }
         
+        metadata_columns = {
+            '_extraction_date': 'date',
+            '_extraction_timestamp': 'timestamp', 
+            '_source_table': 'string'
+        }
+        
         for col in df_copy.columns:
-            col_type = table_schema.get(col)
+            col_type = None
             
-            # Processar coluna baseado no tipo
+            if col in metadata_columns:
+                col_type = metadata_columns[col]
+            else:
+                col_type = table_schema.get(col)
+            
             if col_type and col_type in type_mapping:
                 transform_func, pa_type, hive_type = type_mapping[col_type]
                 df_copy[col] = transform_func(col)
+            else:
+                df_copy[col] = df_copy[col].astype('string')
+                pa_type = pa.string()
+                hive_type = "string"
             
             field = pa.field(col, pa_type).with_metadata({"HIVE_TYPE_STRING": hive_type})
             schema_fields.append(field)
