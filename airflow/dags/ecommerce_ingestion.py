@@ -276,7 +276,7 @@ class DatabaseExtractor:
                         EXTRA
                     FROM INFORMATION_SCHEMA.COLUMNS 
                     WHERE TABLE_SCHEMA = DATABASE() 
-                    AND TABLE_NAME = {table_name}
+                    AND TABLE_NAME = '{table_name}'
                     ORDER BY ORDINAL_POSITION
                 """
                     
