@@ -12,9 +12,8 @@ from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from sqlalchemy import create_engine
 
 from airflow import DAG
-
-warnings.filterwarnings("ignore")
-
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 @dataclass
 class TableConfig:
@@ -47,26 +46,6 @@ class S3Manager:
         self.s3_hook = S3Hook(aws_conn_id=aws_conn_id)
         self.client = self.s3_hook.get_conn()
 
-    def _extract_date_from_path(self, s3_key: str) -> Optional[date]:
-        """Extrai data do caminho S3"""
-        try:
-            parts = s3_key.split("/")
-            if (
-                len(parts) >= 5
-                and "year=" in parts[2]
-                and "month=" in parts[3]
-                and "day=" in parts[4]
-            ):
-
-                year = parts[2].split("=")[1]
-                month = parts[3].split("=")[1]
-                day = parts[4].split("=")[1]
-                date_str = f"{year}-{month}-{day}"
-                return datetime.strptime(date_str, "%Y-%m-%d").date()
-        except (ValueError, IndexError):
-            pass
-        return None
-
     def get_last_extracted_date(self, table_name: str) -> Optional[date]:
         """Busca a última data extraída para uma tabela no S3"""
         try:
@@ -90,30 +69,108 @@ class S3Manager:
             logging.warning(f"Erro ao buscar última data para {table_name}: {str(e)}")
             return None
 
-    def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict) -> float:
+    def upload_json(self, data: Dict, s3_key: str):
+        """Upload JSON para S3"""
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=s3_key,
+            Body=json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+
+    def upload_parquet(self, df: pd.DataFrame, s3_key: str, metadata: Dict, table_schemas: Dict = None) -> float:
         """Upload DataFrame como Parquet para S3"""
+        
         df_copy = df.copy()
         
+        table_name = s3_key.split('/')[1]  # bronze/table_name/...
+        
+        table_schema = table_schemas.get(table_name, {}) if table_schemas else {}
+        
+        schema_fields = []
+        
         for col in df_copy.columns:
-            is_datetime_type = df_copy[col].dtype == 'datetime64[ns]'
-            is_date_column = any(pattern in col.lower() for pattern in ['data_', '_data', 'date_', '_date', 'created_', 'updated_', 'nascimento'])
-            
-            if is_datetime_type or (is_date_column and df_copy[col].dtype == 'object'):
-                try:
+            if col in table_schema:
+                col_type = table_schema[col]
+                
+                if col_type == 'timestamp':
                     df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
-                    print(f"Convertendo coluna {col} para timestamp compatível com Spark")
-                except Exception as e:
-                    print(f"Aviso: Não foi possível converter coluna {col}: {e}")
+                    schema_fields.append(pa.field(col, pa.timestamp('us')))
+                    print(f"Coluna {col}: timestamp(us)")
+                    
+                elif col_type == 'date':
+                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.date
+                    schema_fields.append(pa.field(col, pa.date32()))
+                    print(f"Coluna {col}: date32")
+                    
+                elif col_type in ['int32', 'uint32']:
+                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('Int32')
+                    schema_fields.append(pa.field(col, pa.int32() if col_type == 'int32' else pa.uint32()))
+                    print(f"Coluna {col}: {col_type}")
+                    
+                elif col_type == 'int64':
+                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('Int64')
+                    schema_fields.append(pa.field(col, pa.int64()))
+                    print(f"Coluna {col}: int64")
+                    
+                elif col_type == 'decimal':
+                    df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').astype('float64')
+                    schema_fields.append(pa.field(col, pa.float64()))
+                    print(f"Coluna {col}: float64 (decimal)")
+                    
+                elif col_type == 'bool':
+                    df_copy[col] = df_copy[col].astype('boolean')
+                    schema_fields.append(pa.field(col, pa.bool_()))
+                    print(f"Coluna {col}: bool")
+                    
+                elif col_type == 'time':
+                    df_copy[col] = df_copy[col].astype('string')
+                    schema_fields.append(pa.field(col, pa.string()))
+                    print(f"Coluna {col}: string (time)")
+                    
+                else:  # string
+                    df_copy[col] = df_copy[col].astype('string')
+                    schema_fields.append(pa.field(col, pa.string()))
+                    print(f"Coluna {col}: string")
+            else:
+                if col.endswith('_timestamp'):
+                    df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.floor('us')
+                    schema_fields.append(pa.field(col, pa.timestamp('us')))
+                elif col.endswith('_date'):
+                    schema_fields.append(pa.field(col, pa.string()))
+                else:
+                    schema_fields.append(pa.field(col, pa.string()))
+        
+        schema = pa.schema(schema_fields)
         
         parquet_buffer = BytesIO()
-        df_copy.to_parquet(
-            parquet_buffer,
-            engine="pyarrow",
-            compression="snappy",
-            index=False,
-            use_deprecated_int96_timestamps=False,
-            coerce_timestamps='us'
-        )
+        
+        try:
+            table = pa.Table.from_pandas(df_copy, schema=schema, preserve_index=False)
+            
+            pq.write_table(
+                table,
+                parquet_buffer,
+                compression='snappy',
+                use_deprecated_int96_timestamps=False,
+                coerce_timestamps='us',
+                allow_truncated_timestamps=True
+            )
+            print(f"Parquet criado com schema dinâmico para {table_name}")
+            
+        except Exception as e:
+            print(f"Erro com schema dinâmico para {table_name}, usando método padrão: {e}")
+
+            df_copy.to_parquet(
+                parquet_buffer,
+                engine="pyarrow",
+                compression="snappy",
+                index=False,
+                use_deprecated_int96_timestamps=False,
+                coerce_timestamps='us',
+                allow_truncated_timestamps=True
+            )
+        
         parquet_buffer.seek(0)
 
         self.client.put_object(
@@ -126,14 +183,25 @@ class S3Manager:
 
         return round(len(parquet_buffer.getvalue()) / (1024 * 1024), 2)
 
-    def upload_json(self, data: Dict, s3_key: str):
-        """Upload JSON para S3"""
-        self.client.put_object(
-            Bucket=self.bucket,
-            Key=s3_key,
-            Body=json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"),
-            ContentType="application/json",
-        )
+    def _extract_date_from_path(self, s3_key: str) -> Optional[date]:
+        """Extrai data do caminho S3"""
+        try:
+            parts = s3_key.split("/")
+            if (
+                len(parts) >= 5
+                and "year=" in parts[2]
+                and "month=" in parts[3]
+                and "day=" in parts[4]
+            ):
+
+                year = parts[2].split("=")[1]
+                month = parts[3].split("=")[1]
+                day = parts[4].split("=")[1]
+                date_str = f"{year}-{month}-{day}"
+                return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (ValueError, IndexError):
+            pass
+        return None
 
 
 class DatabaseExtractor:
@@ -142,6 +210,7 @@ class DatabaseExtractor:
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self._engine = None
+        self._table_schemas = {} 
 
     @property
     def engine(self):
@@ -150,6 +219,11 @@ class DatabaseExtractor:
             self._engine = create_engine(self.connection_string)
             logging.info(f"Engine criada: {type(self._engine).__name__}")
         return self._engine
+
+    def dispose(self):
+        """Fecha conexões"""
+        if self._engine:
+            self._engine.dispose()
 
     def extract_data(
         self, table_config: TableConfig, extract_date: date
@@ -171,27 +245,76 @@ class DatabaseExtractor:
             df = pd.read_sql(sql=query, con=conn.connection)
 
         if not df.empty:
-            # Detectar e tratar colunas timestamp automaticamente
-            for col in df.columns:
-                is_date_column = any(pattern in col.lower() for pattern in ['data_', '_data', 'date_', '_date', 'created_', 'updated_', 'nascimento'])
-                
-                if is_date_column and df[col].dtype == 'object':
-                    try:
-                        df[col] = pd.to_datetime(df[col], errors='coerce').dt.floor('us')
-                        print(f"Convertendo coluna {col} de {table_config.table} para timestamp")
-                    except Exception as e:
-                        print(f"Aviso: Não foi possível converter coluna {col} em {table_config.table}: {e}")
-            
             df["_extraction_date"] = extract_date_str
-            df["_extraction_timestamp"] = pd.to_datetime(datetime.now()).floor('us')
+            df["_extraction_timestamp"] = datetime.now()
             df["_source_table"] = table_config.table
 
         return df
 
-    def dispose(self):
-        """Fecha conexões"""
-        if self._engine:
-            self._engine.dispose()
+    def get_all_table_schemas(self, table_names: List[str]) -> Dict:
+        """Extrai schemas de todas as tabelas de uma vez"""
+        schemas = {}
+        for table_name in table_names:
+            schemas[table_name] = self.get_table_schema(table_name)
+        return schemas
+
+    def get_table_schema(self, table_name: str) -> Dict:
+        """Extrai schema da tabela diretamente do MySQL"""
+        if table_name in self._table_schemas:
+            return self._table_schemas[table_name]
+        
+        try:
+            query = """
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE,
+                COLUMN_DEFAULT,
+                COLUMN_TYPE,
+                EXTRA
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = %s
+            ORDER BY ORDINAL_POSITION
+            """
+            
+            with self.engine.connect() as conn:
+                df = pd.read_sql(query, conn, params=[table_name])
+            
+            schema = {}
+            for _, row in df.iterrows():
+                col_name = row['COLUMN_NAME']
+                data_type = row['DATA_TYPE'].lower()
+                column_type = row['COLUMN_TYPE'].lower()
+                
+                if data_type in ['int', 'integer', 'tinyint', 'smallint', 'mediumint']:
+                    if 'unsigned' in column_type:
+                        schema[col_name] = 'uint32'
+                    else:
+                        schema[col_name] = 'int32'
+                elif data_type == 'bigint':
+                    schema[col_name] = 'int64'
+                elif data_type in ['decimal', 'numeric', 'float', 'double']:
+                    schema[col_name] = 'decimal'
+                elif data_type == 'boolean':
+                    schema[col_name] = 'bool'
+                elif data_type == 'date':
+                    schema[col_name] = 'date'
+                elif data_type in ['datetime', 'timestamp']:
+                    schema[col_name] = 'timestamp'
+                elif data_type == 'time':
+                    schema[col_name] = 'time'
+                else:
+                    schema[col_name] = 'string'
+            
+            self._table_schemas[table_name] = schema
+            logging.info(f"Schema extraído para {table_name}: {len(schema)} colunas")
+            
+            return schema
+            
+        except Exception as e:
+            logging.error(f"Erro ao extrair schema de {table_name}: {str(e)}")
+            return {}
 
 
 class DateCalculator:
@@ -291,6 +414,8 @@ class EcommerceDataExtractor:
             "enderecos": TableConfig("enderecos", "criado_em", True),
         }
 
+        self.table_schemas = self._load_table_schemas()
+
     def extract_single_table_date(
         self, table_name: str, table_config: TableConfig, extract_date: date
     ) -> ExtractionResult:
@@ -322,7 +447,7 @@ class EcommerceDataExtractor:
                 "compression": "snappy",
             }
 
-            file_size_mb = self.s3_manager.upload_parquet(df, s3_key, metadata)
+            file_size_mb = self.s3_manager.upload_parquet(df, s3_key, metadata, self.table_schemas)
 
             logging.info(
                 f"{table_name} - {extract_date_str}: {len(df)} registros → {s3_key}"
@@ -346,6 +471,85 @@ class EcommerceDataExtractor:
                 status="error",
                 error=str(e),
             )
+
+    def full_extract(self, execution_datetime: datetime) -> Dict:
+        """
+        Executa uma carga completa inicial de todas as tabelas,
+        reutilizando a infraestrutura existente
+        """
+        logging.info("Iniciando carga completa inicial de dados do e-commerce")
+
+        extraction_summary = {}
+        total_extracted_records = 0
+
+        try:
+            for table_name, table_config in self.table_configs.items():
+                logging.info(f"Processando carga completa da tabela: {table_name}")
+
+                if table_config.date_column:
+                    dates_to_extract = self._get_all_dates_in_table(table_config)
+                    if not dates_to_extract:
+                        logging.info(
+                            f"{table_name}: Nenhuma data encontrada, extraindo como snapshot"
+                        )
+                        dates_to_extract = [execution_datetime.date()]
+                else:
+                    dates_to_extract = [execution_datetime.date()]
+
+                table_records = 0
+                processed_dates = []
+
+                for extract_date in dates_to_extract:
+
+                    temp_config = TableConfig(
+                        table=table_config.table,
+                        date_column=(
+                            table_config.date_column
+                            if table_config.date_column
+                            else None
+                        ),
+                        incremental=bool(table_config.date_column),
+                    )
+
+                    result = self.extract_single_table_date(
+                        table_name, temp_config, extract_date
+                    )
+
+                    if result.status == "success":
+                        table_records += result.records
+                        processed_dates.append(result.extract_date)
+                    elif result.status in ["empty", "no_data"]:
+                        processed_dates.append(result.extract_date)
+
+                extraction_summary[table_name] = {
+                    "records": table_records,
+                    "status": "success" if table_records > 0 else "no_data",
+                    "dates_processed": processed_dates,
+                    "total_partitions": len(dates_to_extract),
+                    "extraction_type": "full_load_partitioned",
+                    "format": "parquet",
+                }
+
+                total_extracted_records += table_records
+                logging.info(
+                    f"{table_name}: {table_records} registros totais em {len(processed_dates)} partições"
+                )
+
+            report = self._generate_report(
+                execution_datetime, extraction_summary, total_extracted_records
+            )
+            report_key = S3PathBuilder.build_report_path(execution_datetime)
+            self.s3_manager.upload_json(report, report_key)
+
+            logging.info(f"Relatório de carga completa salvo: {report_key}")
+            logging.info(
+                f"Carga completa finalizada: {total_extracted_records} registros totais extraídos"
+            )
+
+            return report
+
+        finally:
+            self.db_extractor.dispose()
 
     def run_extraction(self, execution_datetime: datetime) -> Dict:
         """Executa extração completa"""
@@ -412,6 +616,25 @@ class EcommerceDataExtractor:
 
         finally:
             self.db_extractor.dispose()
+
+    def _load_table_schemas(self) -> Dict:
+        """Carrega schemas de todas as tabelas do banco de dados"""
+        try:
+            table_names = list(self.table_configs.keys())
+            schemas = self.db_extractor.get_all_table_schemas(table_names)
+            
+            logging.info(f"Schemas carregados para {len(schemas)} tabelas:")
+            for table_name, schema in schemas.items():
+                logging.info(f"  {table_name}: {len(schema)} colunas")
+                # Log dos tipos para debug
+                for col, tipo in schema.items():
+                    if tipo in ['timestamp', 'date']:
+                        logging.info(f"    {col}: {tipo}")
+            
+            return schemas
+        except Exception as e:
+            logging.error(f"Erro ao carregar schemas: {str(e)}")
+            return {}
 
     def full_extract(self, execution_datetime: datetime) -> Dict:
         """
