@@ -535,10 +535,11 @@ class EcommerceDataExtractor:
                     f"{table_name}: {table_records} registros totais em {len(processed_dates)} partições"
                 )
 
-            report = self._generate_report(
+            report = self._generate_full_load_report(
                 execution_datetime, extraction_summary, total_extracted_records
             )
-            report_key = S3PathBuilder.build_report_path(execution_datetime)
+
+            report_key = f"bronze/_reports/full_load_report_{execution_datetime.strftime('%Y-%m-%d_%H-%M-%S')}.json"
             self.s3_manager.upload_json(report, report_key)
 
             logging.info(f"Relatório de carga completa salvo: {report_key}")
@@ -635,86 +636,6 @@ class EcommerceDataExtractor:
         except Exception as e:
             logging.error(f"Erro ao carregar schemas: {str(e)}")
             return {}
-
-    def full_extract(self, execution_datetime: datetime) -> Dict:
-        """
-        Executa uma carga completa inicial de todas as tabelas,
-        reutilizando a infraestrutura existente
-        """
-        logging.info("Iniciando carga completa inicial de dados do e-commerce")
-
-        extraction_summary = {}
-        total_extracted_records = 0
-
-        try:
-            for table_name, table_config in self.table_configs.items():
-                logging.info(f"Processando carga completa da tabela: {table_name}")
-
-                if table_config.date_column:
-                    dates_to_extract = self._get_all_dates_in_table(table_config)
-                    if not dates_to_extract:
-                        logging.info(
-                            f"{table_name}: Nenhuma data encontrada, extraindo como snapshot"
-                        )
-                        dates_to_extract = [execution_datetime.date()]
-                else:
-                    dates_to_extract = [execution_datetime.date()]
-
-                table_records = 0
-                processed_dates = []
-
-                for extract_date in dates_to_extract:
-
-                    temp_config = TableConfig(
-                        table=table_config.table,
-                        date_column=(
-                            table_config.date_column
-                            if table_config.date_column
-                            else None
-                        ),
-                        incremental=bool(table_config.date_column),
-                    )
-
-                    result = self.extract_single_table_date(
-                        table_name, temp_config, extract_date
-                    )
-
-                    if result.status == "success":
-                        table_records += result.records
-                        processed_dates.append(result.extract_date)
-                    elif result.status in ["empty", "no_data"]:
-                        processed_dates.append(result.extract_date)
-
-                extraction_summary[table_name] = {
-                    "records": table_records,
-                    "status": "success" if table_records > 0 else "no_data",
-                    "dates_processed": processed_dates,
-                    "total_partitions": len(dates_to_extract),
-                    "extraction_type": "full_load_partitioned",
-                    "format": "parquet",
-                }
-
-                total_extracted_records += table_records
-                logging.info(
-                    f"{table_name}: {table_records} registros totais em {len(processed_dates)} partições"
-                )
-
-            report = self._generate_full_load_report(
-                execution_datetime, extraction_summary, total_extracted_records
-            )
-
-            report_key = f"bronze/_reports/full_load_report_{execution_datetime.strftime('%Y-%m-%d_%H-%M-%S')}.json"
-            self.s3_manager.upload_json(report, report_key)
-
-            logging.info(f"Relatório de carga completa salvo: {report_key}")
-            logging.info(
-                f"Carga completa finalizada: {total_extracted_records} registros totais extraídos"
-            )
-
-            return report
-
-        finally:
-            self.db_extractor.dispose()
 
     def _get_all_dates_in_table(self, table_config: TableConfig) -> List[date]:
         """
