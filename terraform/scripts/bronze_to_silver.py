@@ -100,15 +100,34 @@ def load_bronze_table(table_name):
     
     timestamp_cols = ["criado_em", "atualizado_em", "data_venda", "data_nascimento"]
     df = convert_nano_to_timestamp(df, timestamp_cols)
+    
+    if IS_INCREMENTAL and table_name in ["vendas", "itens_venda"]:
+        if spark.catalog.tableExists(f"{SILVER_DATABASE}.facts_vendas"):
+            max_date_query = f"""
+                SELECT COALESCE(MAX(data_venda), '1900-01-01') as max_date 
+                FROM {SILVER_DATABASE}.facts_vendas
+            """
+            max_date = spark.sql(max_date_query).collect()[0]["max_date"]
+            df = df.filter(col("data_venda") > lit(max_date))
+    
     return df
 
 
 def save_to_silver(df, table_name, partition_keys=[]):
     if df.count() == 0:
+        print(f"Pulando {table_name} - sem dados")
         return
 
     dyf = DynamicFrame.fromDF(df, glueContext, table_name)
-    mode = "append" if IS_INCREMENTAL and table_name == "facts_vendas" else "overwrite"
+    
+    if IS_INCREMENTAL and table_name == "facts_vendas":
+        mode = "append"
+    elif IS_INCREMENTAL and table_name.startswith("dim_"):
+        mode = "overwrite"
+    else:
+        mode = "overwrite"
+
+    print(f"Salvando {table_name}: {df.count()} registros ({mode})")
 
     glueContext.write_dynamic_frame.from_options(
         frame=dyf,
@@ -124,6 +143,7 @@ def save_to_silver(df, table_name, partition_keys=[]):
 
 
 # Carregamento das tabelas bronze
+print(f"Modo de execução: {'Incremental' if IS_INCREMENTAL else 'Full Refresh'}")
 vendas_bronze = load_bronze_table("vendas")
 itens_venda_bronze = load_bronze_table("itens_venda")
 produtos_bronze = load_bronze_table("produtos")
@@ -131,6 +151,7 @@ clientes_bronze = load_bronze_table("clientes")
 categorias_bronze = load_bronze_table("categorias")
 fornecedores_bronze = load_bronze_table("fornecedores")
 enderecos_bronze = load_bronze_table("enderecos")
+print(f"Registros carregados - Vendas: {vendas_bronze.count()}, Itens: {itens_venda_bronze.count()}")
 
 # DIM_FORNECEDORES
 dim_fornecedores = add_silver_metadata(
