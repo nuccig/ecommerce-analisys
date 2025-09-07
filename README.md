@@ -33,3 +33,5 @@
        ├──► [ Athena + QuickSight ] → Dashboards
        ├──► [ Athena + Power BI / Metabase ] → Relatórios
        └──► [ Lambda + Athena ] → APIs
+
+Adicionar credenciais no airflow

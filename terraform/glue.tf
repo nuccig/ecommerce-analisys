@@ -165,7 +165,7 @@ resource "aws_glue_crawler" "ecommerce_gold_crawler" {
 resource "aws_glue_job" "bronze_to_silver_full" {
   name         = "${var.project_name}-bronze-to-silver-full"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
@@ -189,7 +189,7 @@ resource "aws_glue_job" "bronze_to_silver_full" {
     "--triggered_by"                     = "manual"
   }
 
-  max_retries = 1
+  max_retries = 0
   timeout     = 60
 
   execution_property {
@@ -210,7 +210,7 @@ resource "aws_glue_job" "bronze_to_silver_full" {
 resource "aws_glue_job" "bronze_to_silver_incremental" {
   name         = "${var.project_name}-bronze-to-silver-incremental"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
@@ -234,7 +234,7 @@ resource "aws_glue_job" "bronze_to_silver_incremental" {
     "--triggered_by"                     = "scheduled"
   }
 
-  max_retries = 3
+  max_retries = 0
   timeout     = 30
 
   execution_property {
