@@ -189,7 +189,7 @@ resource "aws_glue_job" "bronze_to_silver_full" {
     "--triggered_by"                     = "manual"
   }
 
-  max_retries = 1
+  max_retries = 0
   timeout     = 60
 
   execution_property {
@@ -234,7 +234,7 @@ resource "aws_glue_job" "bronze_to_silver_incremental" {
     "--triggered_by"                     = "scheduled"
   }
 
-  max_retries = 3
+  max_retries = 0
   timeout     = 30
 
   execution_property {
