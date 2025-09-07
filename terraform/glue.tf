@@ -165,7 +165,7 @@ resource "aws_glue_crawler" "ecommerce_gold_crawler" {
 resource "aws_glue_job" "bronze_to_silver_full" {
   name         = "${var.project_name}-bronze-to-silver-full"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
@@ -210,7 +210,7 @@ resource "aws_glue_job" "bronze_to_silver_full" {
 resource "aws_glue_job" "bronze_to_silver_incremental" {
   name         = "${var.project_name}-bronze-to-silver-incremental"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/bronze_to_silver.py"
@@ -297,7 +297,7 @@ resource "aws_glue_trigger" "bronze_to_silver_on_demand" {
 resource "aws_glue_job" "silver_to_gold_full" {
   name         = "${var.project_name}-silver-to-gold-full"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/silver_to_gold.py"
@@ -341,7 +341,7 @@ resource "aws_glue_job" "silver_to_gold_full" {
 resource "aws_glue_job" "silver_to_gold_incremental" {
   name         = "${var.project_name}-silver-to-gold-incremental"
   role_arn     = aws_iam_role.glue_job_role.arn
-  glue_version = "4.0"
+  glue_version = "5.0"
 
   command {
     script_location = "s3://${aws_s3_bucket.ecommerce.bucket}/glue-scripts/silver_to_gold.py"
